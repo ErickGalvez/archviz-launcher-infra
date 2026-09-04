@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ArchViz Launcher</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400&family=Cormorant+Garamond:wght@300;400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+<style>
+:root {
+  --bg: #080807;
+  --surface: #0f0f0d;
+  --surface2: #161614;
+  --border: rgba(255,255,255,0.07);
+  --border-h: rgba(255,255,255,0.14);
+  --text: #ede9e2;
+  --text-dim: rgba(237,233,226,0.5);
+  --text-dimmer: rgba(237,233,226,0.25);
+  --gold: #93d8c7;
+  --gold-dim: rgba(147,216,199,0.1);
+  --green: #4a9e6e;
+  --green-dim: rgba(74,158,110,0.1);
+  --red: #c45c4a;
+  --red-dim: rgba(196,92,74,0.1);
+  --mono: 'DM Mono', monospace;
+  --serif: 'Cormorant Garamond', serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:40px 20px;}
+.wrap{width:100%;max-width:560px;}
+
+.header{display:flex;align-items:baseline;gap:14px;margin-bottom:28px;position:relative;}
+.header::after{content:'';position:absolute;left:0;right:0;bottom:-14px;height:1px;background:linear-gradient(90deg,var(--gold) 0%,rgba(147,216,199,0.3) 40%,transparent 70%);opacity:0.45;pointer-events:none;}
+.logo{font-family:var(--serif);font-size:22px;font-weight:300;letter-spacing:0.2em;color:var(--gold);text-transform:uppercase;position:relative;padding-left:13px;}
+.logo::before{content:'';position:absolute;left:0;top:50%;width:5px;height:5px;transform:translateY(-50%) rotate(45deg);border:0.5px solid var(--gold);opacity:0.6;}
+.logo-sub{font-size:10px;letter-spacing:0.14em;color:var(--text-dimmer);text-transform:uppercase;}
+
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;}
+.card{background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:16px;position:relative;}
+.card-corner{position:absolute;width:14px;height:14px;pointer-events:none;opacity:0.22;color:var(--gold);}
+.card-corner svg{width:100%;height:100%;display:block;}
+.card-corner.tl{top:5px;left:5px;}
+.card-corner.tr{top:5px;right:5px;transform:scaleX(-1);}
+.card-corner.bl{bottom:5px;left:5px;transform:scaleY(-1);}
+.card-corner.br{bottom:5px;right:5px;transform:scale(-1,-1);}
+.card-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.card-icon{font-size:16px;color:var(--text-dimmer);}
+.card-name{font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--text);flex:1;}
+
+.badge{font-size:9px;letter-spacing:0.08em;text-transform:uppercase;padding:2px 8px;border-radius:99px;border:0.5px solid var(--border);color:var(--text-dimmer);display:flex;align-items:center;gap:4px;white-space:nowrap;}
+.badge.running,.badge.streaming,.badge.active{border-color:rgba(74,158,110,0.4);color:var(--green);background:var(--green-dim);}
+.badge.starting,.badge.connecting{border-color:rgba(147,216,199,0.4);color:var(--gold);background:var(--gold-dim);}
+.badge.error{border-color:rgba(196,92,74,0.4);color:var(--red);background:var(--red-dim);}
+.badge-dot{width:4px;height:4px;border-radius:50%;background:currentColor;}
+.badge.running .badge-dot,.badge.streaming .badge-dot,.badge.active .badge-dot,.badge.starting .badge-dot,.badge.connecting .badge-dot{animation:pulse 2s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+
+.card-desc{font-size:11px;color:var(--text-dimmer);line-height:1.7;margin-bottom:12px;min-height:38px;}
+.card-path{font-size:10px;color:var(--text-dimmer);background:var(--surface2);border-radius:4px;padding:5px 8px;margin-bottom:12px;word-break:break-all;line-height:1.5;border:0.5px solid var(--border);}
+.card-actions{display:flex;gap:6px;}
+
+.btn{padding:7px 10px;font-size:10px;font-family:var(--mono);letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;border-radius:4px;border:0.5px solid var(--border-h);background:transparent;color:var(--text);display:flex;align-items:center;justify-content:center;gap:5px;transition:background 0.15s;flex:1;}
+.btn:hover{background:rgba(255,255,255,0.04);}
+.btn:active{transform:scale(0.98);}
+.btn:disabled{opacity:0.3;cursor:not-allowed;}
+.btn.stop{border-color:rgba(196,92,74,0.35);color:var(--red);}
+.btn.stop:hover{background:var(--red-dim);}
+
+.url-row{background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:10px;margin-bottom:10px;position:relative;}
+.url-row::before,.log::before{content:'';position:absolute;top:0;left:50%;width:28px;height:1px;transform:translateX(-50%);background:linear-gradient(90deg,transparent,var(--gold),transparent);opacity:0.35;pointer-events:none;}
+.url-label{font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-dimmer);white-space:nowrap;}
+.url-val{flex:1;font-size:11px;color:var(--text-dimmer);word-break:break-all;line-height:1.5;}
+.url-val.active{color:var(--gold);}
+.url-actions{display:flex;gap:6px;flex-shrink:0;}
+.icon-btn{font-size:15px;color:var(--text-dimmer);cursor:pointer;padding:5px 7px;border-radius:4px;border:0.5px solid var(--border);background:transparent;transition:all 0.15s;display:flex;align-items:center;}
+.icon-btn:hover{color:var(--text);border-color:var(--border-h);}
+.icon-btn.copied{color:var(--green);border-color:rgba(74,158,110,0.4);}
+
+.log{background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:10px 14px;font-size:11px;line-height:1.9;min-height:110px;max-height:160px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent;margin-bottom:10px;position:relative;}
+.log-line{display:flex;gap:10px;}
+.log-time{color:var(--text-dimmer);flex-shrink:0;}
+.log-ok{color:var(--green);}
+.log-err{color:var(--red);}
+.log-info{color:var(--text-dim);}
+
+.footer{display:flex;align-items:center;justify-content:space-between;}
+.footer-note{font-size:10px;color:var(--text-dimmer);letter-spacing:0.04em;}
+.reset-btn{font-size:10px;font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;padding:4px 12px;cursor:pointer;border:0.5px solid var(--border);border-radius:4px;background:transparent;color:var(--text-dimmer);transition:all 0.15s;}
+.reset-btn:hover{border-color:var(--border-h);color:var(--text);}
+
+.toggle-wrap { position:relative; display:inline-flex; align-items:center; cursor:pointer; }
+.toggle-wrap input { display:none; }
+.toggle-track { width:32px; height:18px; background:rgba(255,255,255,0.08); border:0.5px solid var(--border-h); border-radius:99px; position:relative; transition:background 0.2s; }
+.toggle-wrap input:checked ~ .toggle-track { background:var(--green-dim); border-color:rgba(74,158,110,0.5); }
+.toggle-thumb { position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%; background:var(--text-dimmer); transition:left 0.2s, background 0.2s; }
+.toggle-wrap input:checked ~ .toggle-track .toggle-thumb { left:16px; background:var(--green); }
+
+.server-warn{background:var(--red-dim);border:0.5px solid rgba(196,92,74,0.3);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(--red);line-height:1.7;display:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <span class="logo">ArchViz</span>
+    <span class="logo-sub">Stream Launcher · UE5.7</span>
+  </div>
+
+
+  <div class="cards">
+    <div class="card" style="grid-column:1/-1">
+      <div class="card-corner tl"><svg viewBox="0 0 14 14" fill="none"><path d="M1 13 L1 5 L5 1 L13 1" stroke="currentColor" stroke-width="1"/></svg></div>
+      <div class="card-corner tr"><svg viewBox="0 0 14 14" fill="none"><path d="M1 13 L1 5 L5 1 L13 1" stroke="currentColor" stroke-width="1"/></svg></div>
+      <div class="card-corner bl"><svg viewBox="0 0 14 14" fill="none"><path d="M1 13 L1 5 L5 1 L13 1" stroke="currentColor" stroke-width="1"/></svg></div>
+      <div class="card-corner br"><svg viewBox="0 0 14 14" fill="none"><path d="M1 13 L1 5 L5 1 L13 1" stroke="currentColor" stroke-width="1"/></svg></div>
+      <div class="card-head">
+        <i class="ti ti-device-desktop card-icon" aria-hidden="true"></i>
+        <span class="card-name">Pixel Stream</span>
+        <div class="badge" id="ps-badge" style="display:none">
+          <div class="badge-dot"></div>
+          <span id="ps-status-text">Idle</span>
+        </div>
+        <div style="flex:1"></div>
+        <!-- Tunnel toggle -->
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dimmer);">
+            <i class="ti ti-cloud" aria-hidden="true"></i> Cloudflare Tunnel
+          </span>
+          <div class="badge" id="cf-badge" style="cursor:default">
+            <div class="badge-dot"></div>
+            <span id="cf-status-text">Off</span>
+          </div>
+          <label class="toggle-wrap" title="Enable Cloudflare tunnel on launch">
+            <input type="checkbox" id="cf-toggle" onchange="onToggleCF(this)">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+      </div>
+      <div class="card-desc" id="ps-desc">Launches UE5 build and Wilbur signaling server on port 80.</div>
+      <div class="card-path" id="ps-path">launch_pixelstream.bat</div>
+      <div class="card-actions">
+        <button class="btn" id="ps-start-btn" onclick="launchAll()">
+          <i class="ti ti-player-play" aria-hidden="true"></i> Launch
+        </button>
+        <button class="btn stop" id="ps-stop-btn" onclick="stopAll()" disabled>
+          <i class="ti ti-square" aria-hidden="true"></i> Stop all
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="url-row">
+    <span class="url-label">Client URL</span>
+    <span class="url-val" id="url-val" spellcheck="false" style="outline:none;min-width:60px;">— waiting for tunnel</span>
+    <div class="url-actions">
+      <button class="icon-btn" id="copy-btn" title="Copy URL" onclick="copyURL()">
+        <i class="ti ti-copy" id="copy-icon" aria-hidden="true"></i>
+      </button>
+      <button class="icon-btn" title="Open in browser" onclick="openURL()">
+        <i class="ti ti-external-link" aria-hidden="true"></i>
+      </button>
+    </div>
+  </div>
+
+  <div class="log" id="log">
+    <div class="log-line"><span class="log-time">--:--:--</span><span class="log-info">Connecting to launcher server…</span></div>
+  </div>
+
+  <div class="footer">
+    <span class="footer-note">Port 80 · Streamer 8888 · Upload cap 25 Mbps</span>
+    <button class="reset-btn" onclick="resetAll()">Reset all</button>
+  </div>
+
+</div>
+
+<script>
+// Injected by launcher-server.js at serve time — never hardcode a real
+// value here, this file is served locally only.
+const ADMIN_KEY = '__ADMIN_KEY__';
+let tunnelURL = '';
+let psState = 'stopped';
+let cfState = 'stopped';
+let es = null;
+
+const statusLabels = {
+  stopped: 'Idle', starting: 'Starting…', running: 'Wilbur Live',
+  streaming: 'Streaming ✓', connecting: 'Connecting…', active: 'Active'
+};
+const psDescriptions = {
+  stopped: 'Launches UE5 build and Wilbur signaling server on port 80.',
+  starting: 'Killing previous instances and starting Wilbur…',
+  running: 'Wilbur is live. Waiting for UE5 to connect…',
+  streaming: 'Stream is live. Open tunnel to share with client.'
+};
+const cfDescriptions = {
+  stopped: 'Creates a public HTTPS tunnel. Run after stream is live.',
+  connecting: 'Connecting to Cloudflare edge network…',
+  active: 'Tunnel active. Share the URL with your client.'
+};
+
+function ts() {
+  return new Date().toLocaleTimeString('en-GB');
+}
+
+function addLog(entry) {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${entry.ts || ts()}</span><span class="log-${entry.type || 'info'}">${entry.msg}</span>`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setPSState(state) {
+  psState = state;
+  const badge = document.getElementById('ps-badge');
+  badge.className = 'badge ' + state;
+  document.getElementById('ps-status-text').textContent = statusLabels[state] || state;
+  document.getElementById('ps-desc').textContent = psDescriptions[state] || psDescriptions.stopped;
+  document.getElementById('ps-start-btn').disabled = (state !== 'stopped');
+  document.getElementById('ps-stop-btn').disabled = (state === 'stopped');
+  if (state === 'running' || state === 'streaming') {
+    document.getElementById('cf-start-btn').disabled = false;
+  }
+}
+
+function setCFState(state, url) {
+  cfState = state;
+  const badge = document.getElementById('cf-badge');
+  badge.className = 'badge ' + state;
+  document.getElementById('cf-status-text').textContent = statusLabels[state] || state;
+  // Note: cf-desc / cf-start-btn / cf-stop-btn aren't in this layout (tunnel is
+  // a toggle now, not its own card) — guarded so a missing element never
+  // silently aborts the rest of this function like it did before.
+  document.getElementById('cf-desc')?.setAttribute('data-text', cfDescriptions[state] || cfDescriptions.stopped);
+  const cfStartBtn = document.getElementById('cf-start-btn');
+  const cfStopBtn = document.getElementById('cf-stop-btn');
+  if (cfStartBtn) cfStartBtn.disabled = (state !== 'stopped');
+  if (cfStopBtn) cfStopBtn.disabled = (state === 'stopped');
+  if (url) {
+    tunnelURL = url;
+    const urlEl = document.getElementById('url-val');
+    urlEl.textContent = url;
+    urlEl.className = 'url-val active';
+  }
+  if (state === 'stopped') {
+    tunnelURL = '';
+    document.getElementById('url-val').textContent = '— waiting for tunnel';
+    document.getElementById('url-val').className = 'url-val';
+  }
+}
+
+function connectSSE() {
+  es = new EventSource('/events?key=' + encodeURIComponent(ADMIN_KEY));
+
+  es.addEventListener('log', e => {
+    addLog(JSON.parse(e.data));
+  });
+
+  es.addEventListener('ps-status', e => {
+    const d = JSON.parse(e.data);
+    setPSState(d.status);
+  });
+
+  es.addEventListener('cf-status', e => {
+    const d = JSON.parse(e.data);
+    setCFState(d.status, d.url);
+  });
+
+  es.onerror = () => {
+    // reconnecting silently
+  };
+
+  es.onopen = () => {
+    document.getElementById('server-warn').style.display = 'none';
+    addLog({ ts: ts(), msg: 'Connected to launcher server.', type: 'ok' });
+  };
+}
+
+async function api(endpoint) {
+  try {
+    const r = await fetch(endpoint, { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY } });
+    return await r.json();
+  } catch(e) {
+    addLog({ ts: ts(), msg: 'Server error: ' + e.message, type: 'err' });
+    return { ok: false };
+  }
+}
+
+let cfEnabled = false;
+
+function onToggleCF(el) {
+  cfEnabled = el.checked;
+  const cfBadge = document.getElementById('cf-badge');
+  const cfText = document.getElementById('cf-status-text');
+  const psPath = document.getElementById('ps-path');
+  if (cfEnabled) {
+    cfBadge.className = 'badge connecting';
+    cfText.textContent = 'Queued';
+    psPath.textContent = 'expose_cloudflare_tunnel.bat → launch_pixelstream.bat';
+    addLog({ ts: ts(), msg: 'Cloudflare tunnel enabled — will launch before stream.', type: 'ok' });
+  } else {
+    cfBadge.className = 'badge';
+    cfText.textContent = 'Off';
+    psPath.textContent = 'launch_pixelstream.bat';
+    addLog({ ts: ts(), msg: 'Cloudflare tunnel disabled.', type: 'info' });
+  }
+}
+
+async function launchAll() {
+  if (cfEnabled) {
+    addLog({ ts: ts(), msg: 'Starting Cloudflare tunnel first…', type: 'info' });
+    await api('/api/launch-cf');
+    // Give CF 4 seconds to establish before starting stream
+    // Wait for Wilbur to be live before starting pixel stream
+    addLog({ ts: ts(), msg: 'Waiting for Wilbur to start on port 80…', type: 'info' });
+    let wilburReady = false;
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const check = await fetch('/api/status');
+        const st = await check.json();
+        if (st.ps === 'running' || st.ps === 'streaming') {
+          wilburReady = true;
+          break;
+        }
+      } catch(e) {}
+    }
+    addLog({ ts: ts(), msg: wilburReady ? 'Wilbur live — starting Pixel Stream…' : 'Starting Pixel Stream…', type: wilburReady ? 'ok' : 'info' });
+  }
+  await api('/api/launch-ps');
+}
+
+async function stopAll() {
+  addLog({ ts: ts(), msg: 'Stopping all processes…', type: 'info' });
+  try {
+    await fetch('/api/stop-all', { method: 'POST' });
+  } catch(e) {}
+  psState = 'stopped';
+  cfState = 'stopped';
+  tunnelURL = '';
+  setPSState('stopped');
+  setCFState('stopped', '');
+  document.getElementById('url-val').textContent = '— waiting for tunnel';
+  document.getElementById('url-val').className = 'url-val';
+  document.getElementById('ps-start-btn').disabled = false;
+  addLog({ ts: ts(), msg: 'All processes stopped — launcher server closing.', type: 'info' });
+}
+
+async function launchPS() { await api('/api/launch-ps'); }
+async function stopPS()   { await api('/api/stop-ps'); }
+async function launchCF() { await api('/api/launch-cf'); }
+async function stopCF()   { await api('/api/stop-cf'); }
+
+async function submitURL() {
+  const el = document.getElementById('url-val');
+  const val = el.textContent.trim();
+  if (!val || val.includes('paste')) return;
+  const match = val.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/i);
+  if (match) {
+    await fetch('/api/set-url', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'X-Admin-Key': ADMIN_KEY},
+      body: JSON.stringify({ url: match[0] })
+    });
+  }
+}
+
+function copyURL() {
+  if (!tunnelURL) { addLog({ ts: ts(), msg: 'No tunnel URL yet.', type: 'err' }); return; }
+  navigator.clipboard.writeText(tunnelURL).then(() => {
+    const icon = document.getElementById('copy-icon');
+    const btn  = document.getElementById('copy-btn');
+    icon.className = 'ti ti-check';
+    btn.classList.add('copied');
+    addLog({ ts: ts(), msg: 'URL copied to clipboard.', type: 'ok' });
+    setTimeout(() => { icon.className = 'ti ti-copy'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+function openURL() {
+  if (!tunnelURL) { addLog({ ts: ts(), msg: 'No tunnel URL yet.', type: 'err' }); return; }
+  window.open(tunnelURL, '_blank');
+}
+
+async function resetAll() {
+  await stopPS();
+  await stopCF();
+  document.getElementById('log').innerHTML =
+    '<div class="log-line"><span class="log-time">--:--:--</span><span class="log-info">Reset — ready to launch.</span></div>';
+}
+
+connectSSE();
+
+// Auto-run the full startup sequence once, on page load — saves the click.
+// Tunnel is enabled by default since both routes are static/persistent.
+window.addEventListener('DOMContentLoaded', () => {
+  const cfToggle = document.getElementById('cf-toggle');
+  cfToggle.checked = true;
+  onToggleCF(cfToggle);
+  addLog({ ts: ts(), msg: 'Auto-starting on page load…', type: 'info' });
+  launchAll();
+});
+
+// Poll tunnel URL and PS status every 2s as fallback
+setInterval(async () => {
+  try {
+    // Tunnel URL
+    const r = await fetch('/api/tunnel-url');
+    const d = await r.json();
+    if (d.url && d.url !== tunnelURL) {
+      tunnelURL = d.url;
+      const urlEl = document.getElementById('url-val');
+      urlEl.textContent = tunnelURL;
+      urlEl.className = 'url-val active';
+      addLog({ ts: ts(), msg: 'Client URL: ' + tunnelURL, type: 'ok' });
+    }
+
+    // PS + overall status
+    const r2 = await fetch('/api/status');
+    const d2 = await r2.json();
+    const psOrder = ['stopped','starting','running','streaming'];
+    const cfOrder = ['stopped','connecting','active'];
+    if (d2.ps && psOrder.indexOf(d2.ps) > psOrder.indexOf(psState)) setPSState(d2.ps);
+    if (d2.cf && cfOrder.indexOf(d2.cf) > cfOrder.indexOf(cfState)) setCFState(d2.cf, d2.tunnelURL || tunnelURL);
+  } catch(e) {}
+}, 2000);
+</script>
+</body>
+</html>

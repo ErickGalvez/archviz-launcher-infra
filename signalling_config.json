@@ -1,0 +1,32 @@
+{
+  "UseFrontend": false,
+  "UseMatchmaker": false,
+  "UseHTTPS": false,
+  "HTTPPort": 80,
+  "StreamerPort": 8888,
+  "LogToFile": true,
+  "LogVerbose": false,
+  "HomepageFile": "player.html",
+  "AdditionalRoutes": {},
+
+  "peerConnectionOptions": {
+    "iceServers": [
+
+      // Free STUN — handles most home/office NAT situations.
+      // Tells each side their public IP so WebRTC can connect directly.
+      { "urls": ["stun:stun.l.google.com:19302"] },
+      { "urls": ["stun:stun1.l.google.com:19302"] },
+
+      // TURN relay — only needed if a client is behind a strict corporate
+      // firewall that blocks direct peer-to-peer WebRTC connections.
+      // Uncomment and fill in your Coturn server details if needed.
+      //
+      // {
+      //   "urls": ["turn:YOUR_VPS_IP:3478"],
+      //   "username": "your_turn_user",
+      //   "credential": "your_turn_password"
+      // }
+
+    ]
+  }
+}

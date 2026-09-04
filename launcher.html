@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ArchViz Launcher</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400&family=Cormorant+Garamond:wght@300;400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+<style>
+:root {
+  --bg: #080807;
+  --surface: #0f0f0d;
+  --surface2: #161614;
+  --border: rgba(255,255,255,0.07);
+  --border-hover: rgba(255,255,255,0.14);
+  --text: #ede9e2;
+  --text-dim: rgba(237,233,226,0.5);
+  --text-dimmer: rgba(237,233,226,0.25);
+  --gold: #c8a96e;
+  --gold-dim: rgba(200,169,110,0.12);
+  --green: #4a9e6e;
+  --green-dim: rgba(74,158,110,0.12);
+  --red: #c45c4a;
+  --red-dim: rgba(196,92,74,0.12);
+  --mono: 'DM Mono', monospace;
+  --serif: 'Cormorant Garamond', serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+.launcher {
+  width: 100%;
+  max-width: 560px;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.logo {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 300;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+.logo-sub {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-dimmer);
+  text-transform: uppercase;
+}
+
+/* Cards */
+.cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.card {
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.card-icon { font-size: 16px; color: var(--text-dimmer); }
+.card-name {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  font-weight: 400;
+  flex: 1;
+}
+
+.badge {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 0.5px solid var(--border);
+  color: var(--text-dimmer);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.badge.running { border-color: rgba(74,158,110,0.4); color: var(--green); background: var(--green-dim); }
+.badge.error { border-color: rgba(196,92,74,0.4); color: var(--red); background: var(--red-dim); }
+.badge-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.badge.running .badge-dot { animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.card-desc {
+  font-size: 11px;
+  color: var(--text-dimmer);
+  line-height: 1.7;
+  margin-bottom: 12px;
+  min-height: 38px;
+}
+
+.card-path {
+  font-size: 10px;
+  color: var(--text-dimmer);
+  background: var(--surface2);
+  border-radius: 4px;
+  padding: 5px 8px;
+  margin-bottom: 12px;
+  word-break: break-all;
+  line-height: 1.5;
+  border: 0.5px solid var(--border);
+}
+
+.card-btn {
+  width: 100%;
+  padding: 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 4px;
+  border: 0.5px solid var(--border-hover);
+  background: transparent;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s;
+  text-decoration: none;
+}
+.card-btn:hover { background: rgba(255,255,255,0.04); }
+.card-btn:active { transform: scale(0.98); }
+.card-btn:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+.card-btn.stop { border-color: rgba(196,92,74,0.4); color: var(--red); }
+.card-btn.stop:hover { background: var(--red-dim); }
+.card-btn.success { border-color: rgba(74,158,110,0.4); color: var(--green); }
+
+/* URL row */
+.url-row {
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.url-label {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dimmer);
+  white-space: nowrap;
+}
+.url-val {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-dimmer);
+  word-break: break-all;
+  line-height: 1.5;
+}
+.url-val.active { color: var(--gold); cursor: pointer; }
+.url-copy {
+  font-size: 15px;
+  color: var(--text-dimmer);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 0.5px solid var(--border);
+  background: transparent;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+}
+.url-copy:hover { color: var(--text); border-color: var(--border-hover); }
+.url-copy.copied { color: var(--green); border-color: rgba(74,158,110,0.4); }
+
+/* Log */
+.log {
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.9;
+  min-height: 90px;
+  max-height: 130px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  margin-bottom: 10px;
+}
+.log-line { display: flex; gap: 10px; }
+.log-time { color: var(--text-dimmer); flex-shrink: 0; }
+.log-ok { color: var(--green); }
+.log-err { color: var(--red); }
+.log-info { color: var(--text-dim); }
+
+/* Footer */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.footer-note { font-size: 10px; color: var(--text-dimmer); letter-spacing: 0.04em; }
+.reset-btn {
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  cursor: pointer;
+  border: 0.5px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dimmer);
+  transition: all 0.15s;
+}
+.reset-btn:hover { border-color: var(--border-hover); color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="launcher">
+
+  <div class="header">
+    <span class="logo">ArchViz</span>
+    <span class="logo-sub">Stream Launcher · UE5.7</span>
+  </div>
+
+  <div class="cards">
+
+    <div class="card">
+      <div class="card-head">
+        <i class="ti ti-device-desktop card-icon" aria-hidden="true"></i>
+        <span class="card-name">Pixel Stream</span>
+        <div class="badge" id="ps-badge">
+          <div class="badge-dot"></div>
+          <span id="ps-status">Idle</span>
+        </div>
+      </div>
+      <div class="card-desc" id="ps-desc">Launches UE5 build and Wilbur signaling server on port 80.</div>
+      <div class="card-path">launch_pixelstream.bat</div>
+      <a class="card-btn" id="ps-btn" href="launch_pixelstream.bat">
+        <i class="ti ti-player-play" aria-hidden="true"></i>
+        Launch stream
+      </a>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <i class="ti ti-cloud card-icon" aria-hidden="true"></i>
+        <span class="card-name">Cloudflare</span>
+        <div class="badge" id="cf-badge">
+          <div class="badge-dot"></div>
+          <span id="cf-status">Idle</span>
+        </div>
+      </div>
+      <div class="card-desc" id="cf-desc">Creates a public HTTPS tunnel. Run after stream is live.</div>
+      <div class="card-path">expose_cloudflare_tunnel.bat</div>
+      <a class="card-btn" id="cf-btn" href="expose_cloudflare_tunnel.bat">
+        <i class="ti ti-world" aria-hidden="true"></i>
+        Open tunnel
+      </a>
+    </div>
+
+  </div>
+
+  <!-- URL row -->
+  <div class="url-row">
+    <span class="url-label">Client URL</span>
+    <span class="url-val" id="url-val">— paste your trycloudflare.com URL here</span>
+    <button class="url-copy" id="copy-btn" title="Copy URL" onclick="copyURL()">
+      <i class="ti ti-copy" id="copy-icon" aria-hidden="true"></i>
+    </button>
+  </div>
+
+  <!-- Log -->
+  <div class="log" id="log">
+    <div class="log-line"><span class="log-time">--:--:--</span><span class="log-info">Ready — click Launch stream to begin.</span></div>
+  </div>
+
+  <div class="footer">
+    <span class="footer-note">Port 80 · Streamer 8888 · Upload cap 25 Mbps</span>
+    <button class="reset-btn" onclick="resetAll()">Reset</button>
+  </div>
+
+</div>
+
+<script>
+let tunnelURL = '';
+
+function ts() {
+  const d = new Date();
+  return [d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>n.toString().padStart(2,'0')).join(':');
+}
+
+function addLog(msg, type='info') {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${ts()}</span><span class="log-${type}">${msg}</span>`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setBadge(id, statusId, state, text) {
+  const b = document.getElementById(id);
+  b.className = 'badge' + (state ? ' ' + state : '');
+  document.getElementById(statusId).textContent = text;
+}
+
+// Clicking the bat links logs the action and updates status
+document.getElementById('ps-btn').addEventListener('click', function() {
+  setBadge('ps-badge','ps-status','','Starting…');
+  document.getElementById('ps-desc').textContent = 'Running bat file — check the terminal window that opens.';
+  addLog('launch_pixelstream.bat executed — watch the terminal for Wilbur startup.', 'info');
+  addLog('Wait ~15s for UE5 to load, then check http://localhost', 'info');
+  setTimeout(() => {
+    setBadge('ps-badge','ps-status','running','Running');
+    document.getElementById('ps-desc').textContent = 'Stream started. Open tunnel when ready to share with client.';
+    addLog('Assuming stream is live — open http://localhost to verify.', 'ok');
+  }, 3000);
+});
+
+document.getElementById('cf-btn').addEventListener('click', function() {
+  setBadge('cf-badge','cf-status','','Connecting…');
+  document.getElementById('cf-desc').textContent = 'Running bat file — copy the trycloudflare.com URL from the terminal.';
+  addLog('expose_cloudflare_tunnel.bat executed — copy the URL from the terminal window.', 'info');
+  addLog('Paste the trycloudflare.com URL into the field above.', 'info');
+  setTimeout(() => {
+    setBadge('cf-badge','cf-status','running','Active');
+    document.getElementById('cf-desc').textContent = 'Tunnel active. Paste the URL above and share with your client.';
+  }, 2000);
+});
+
+// URL input — click the url-val to paste/type
+const urlVal = document.getElementById('url-val');
+urlVal.setAttribute('contenteditable', 'true');
+urlVal.setAttribute('spellcheck', 'false');
+urlVal.style.outline = 'none';
+urlVal.style.minWidth = '60px';
+
+urlVal.addEventListener('focus', function() {
+  if (this.textContent.includes('paste your')) this.textContent = '';
+  this.classList.add('active');
+});
+urlVal.addEventListener('blur', function() {
+  tunnelURL = this.textContent.trim();
+  if (!tunnelURL) {
+    this.textContent = '— paste your trycloudflare.com URL here';
+    this.classList.remove('active');
+  } else {
+    this.classList.add('active');
+    addLog('Client URL set: ' + tunnelURL, 'ok');
+  }
+});
+urlVal.addEventListener('paste', function() {
+  setTimeout(() => {
+    tunnelURL = this.textContent.trim();
+    this.classList.add('active');
+    addLog('Client URL set: ' + tunnelURL, 'ok');
+  }, 50);
+});
+
+function copyURL() {
+  tunnelURL = document.getElementById('url-val').textContent.trim();
+  if (!tunnelURL || tunnelURL.includes('paste your')) {
+    addLog('No URL to copy — paste your tunnel URL first.', 'err');
+    return;
+  }
+  navigator.clipboard.writeText(tunnelURL).then(() => {
+    const icon = document.getElementById('copy-icon');
+    const btn = document.getElementById('copy-btn');
+    icon.className = 'ti ti-check';
+    btn.classList.add('copied');
+    addLog('URL copied to clipboard.', 'ok');
+    setTimeout(() => {
+      icon.className = 'ti ti-copy';
+      btn.classList.remove('copied');
+    }, 1500);
+  });
+}
+
+function resetAll() {
+  setBadge('ps-badge','ps-status','','Idle');
+  setBadge('cf-badge','cf-status','','Idle');
+  document.getElementById('ps-desc').textContent = 'Launches UE5 build and Wilbur signaling server on port 80.';
+  document.getElementById('cf-desc').textContent = 'Creates a public HTTPS tunnel. Run after stream is live.';
+  tunnelURL = '';
+  urlVal.textContent = '— paste your trycloudflare.com URL here';
+  urlVal.classList.remove('active');
+  document.getElementById('log').innerHTML = '<div class="log-line"><span class="log-time">--:--:--</span><span class="log-info">Reset — ready to launch.</span></div>';
+}
+</script>
+
+</body>
+</html>
