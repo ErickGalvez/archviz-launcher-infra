@@ -1,6 +1,7 @@
 # Secrets — never track these
 admin.key
 get_cf_turn_creds.ps1
+turn_creds.env
 
 # Vendored binaries — not our source, just re-download if needed
 cloudflared.exe

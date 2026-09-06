@@ -6,12 +6,14 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 // ── CONFIG ───────────────────────────────────────────────────
 const PORT = 3000;
+const WILBUR_HTTP_PORT = 80;
+const WILBUR_STREAMER_PORT = 8888;
 
 // Paths to your bat files — edit if needed
 const BAT_DIR = __dirname;
@@ -67,35 +69,219 @@ function addLog(source, msg, type='info') {
   console.log(`[${source.toUpperCase()}] ${msg}`);
 }
 
+// ── PROCESS CONTROL — precise, verified kills instead of fragile heuristics ──
+// The old approach killed Wilbur with `taskkill /IM node.exe /FI "MEMUSAGE gt
+// 50000"` — a guess that silently does nothing if Wilbur happens to be under
+// 50MB, leaving it bound to port 80 forever and blocking every future launch.
+// This instead finds whatever's actually LISTENING on our known ports and
+// kills that PID directly — works regardless of memory usage, and can never
+// accidentally hit launcher-server.js's own process (port 3000) or an
+// unrelated node process elsewhere on the machine.
+
+// Observed directly during testing: a heavily-churned process/handle table
+// (many repeated launch/kill cycles in a short span) can leave netstat/
+// taskkill/tasklist hanging indefinitely rather than erroring. Without a
+// timeout, that hangs the returned Promise forever — which hangs whatever
+// admin API call was waiting on it, silently, since the rest of the server
+// stays responsive (other requests aren't blocked, just that one).
+const EXEC_TIMEOUT_MS = 8000;
+
+function killByImageName(name) {
+  return new Promise(resolve => {
+    exec(`taskkill /F /IM ${name}`, { timeout: EXEC_TIMEOUT_MS }, err => resolve(!err)); // resolves true if something was actually found and killed
+  });
+}
+
+function isProcessRunning(name) {
+  return new Promise(resolve => {
+    exec(`tasklist /FI "IMAGENAME eq ${name}" /NH`, { timeout: EXEC_TIMEOUT_MS }, (err, stdout) => {
+      resolve(!err && !!stdout && stdout.toLowerCase().includes(name.toLowerCase()));
+    });
+  });
+}
+
+function killByPort(port) {
+  return new Promise(resolve => {
+    exec('netstat -ano', { timeout: EXEC_TIMEOUT_MS }, (err, stdout) => {
+      if (err || !stdout) return resolve([]);
+      const pids = new Set();
+      stdout.split('\n').forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 4 || !/^TCP$/i.test(parts[0])) return;
+        const localAddr = parts[1] || '';
+        const state = parts[parts.length - 2];
+        const pid = parts[parts.length - 1];
+        const localPort = localAddr.substring(localAddr.lastIndexOf(':') + 1);
+        if (localPort === String(port) && /LISTENING/i.test(state) && pid && pid !== '0') pids.add(pid);
+      });
+      if (pids.size === 0) return resolve([]);
+      Promise.all([...pids].map(pid => new Promise(res => exec(`taskkill /F /PID ${pid}`, { timeout: EXEC_TIMEOUT_MS }, () => res(pid)))))
+        .then(resolve);
+    });
+  });
+}
+
+// Full teardown of the UE5 + Wilbur pair. Used both by the Stop button and,
+// pre-emptively, by launchPS() itself — so a stale process from a crash, a
+// manually-closed terminal, or a previous launcher-server.js restart can
+// never block a fresh launch. Launch and Stop are idempotent either way.
+async function killPSProcesses() {
+  const foundUE5 = await killByImageName('ArchVizProject3.exe');
+  const foundHttp = await killByPort(WILBUR_HTTP_PORT);
+  const foundStreamer = await killByPort(WILBUR_STREAMER_PORT);
+  if (psProcess) { try { psProcess.kill(); } catch (e) {} }
+  psProcess = null;
+  const foundAnything = foundUE5 || foundHttp.length > 0 || foundStreamer.length > 0;
+  if (foundAnything) {
+    // A large loaded UE5 process can take several seconds to actually exit
+    // even after taskkill reports success (observed ~3s for a 2GB+ process)
+    // — poll for real death instead of guessing a fixed delay, so a
+    // subsequent launch never races a still-dying process for port 80.
+    for (let i = 0; i < 10; i++) {
+      if (!(await isProcessRunning('ArchVizProject3.exe'))) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  return foundAnything;
+}
+
+async function killCFProcesses() {
+  const found = await killByImageName('cloudflared.exe');
+  if (cfProcess) { try { cfProcess.kill(); } catch (e) {} }
+  cfProcess = null;
+  if (found) await new Promise(r => setTimeout(r, 400));
+  return found;
+}
+
+// ── TURN CREDENTIALS ─────────────────────────────────────────
+// This used to be fetched INSIDE launch_pixelstream.bat, which needed to
+// wait for the result before starting Wilbur. Proven by direct testing: cmd
+// batch scripts spawned with detached:true/stdio:'ignore' (exactly what this
+// server uses below) cannot reliably wait at all — `timeout`, `ping`-as-delay,
+// and a manual polling loop all returned instantly with zero elapsed time in
+// that exact context, for reasons not worth chasing into the Windows console
+// subsystem further. Node's own exec() has no such problem (proven throughout
+// this file already), so the fetch now happens here, and the *already
+// resolved* credentials are handed to the batch file as environment
+// variables it just reads — no waiting logic needed on the batch side at all.
+const TURN_CREDS_PS1 = path.join(BAT_DIR, 'get_cf_turn_creds.ps1');
+const TURN_FETCH_TIMEOUT_MS = 15000;
+
+function fetchTurnCredentials() {
+  return new Promise(resolve => {
+    if (!fs.existsSync(TURN_CREDS_PS1)) return resolve(null);
+    exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${TURN_CREDS_PS1}"`, { timeout: TURN_FETCH_TIMEOUT_MS }, (err, stdout) => {
+      if (err || !stdout) return resolve(null);
+      const creds = {};
+      stdout.split('\n').forEach(line => {
+        const m = line.trim().match(/^(TURN_SERVER|TURN_USER|TURN_PASS)=(.+)$/);
+        if (m) creds[m[1]] = m[2].trim();
+      });
+      resolve(creds.TURN_SERVER ? creds : null);
+    });
+  });
+}
+
 // ── PROCESS LAUNCHERS ────────────────────────────────────────
 
-function launchPS() {
-  if (psProcess) return { ok: false, error: 'Already running' };
-  if (!fs.existsSync(PS_BAT)) return { ok: false, error: 'launch_pixelstream.bat not found at: ' + PS_BAT };
+// Observed directly: overlapping Launch calls (a double-click, or two people/
+// tabs hitting Launch within a few seconds of each other) each ran their own
+// full cleanup+relaunch cycle on top of one already in flight — one launch's
+// Wilbur would still be mid-startup when the next one's cleanup killed it,
+// producing exactly the port-conflict/EADDRINUSE crashes and duplicate
+// DefaultStreamer/DefaultStreamer1 sessions seen in testing. This lock makes
+// a second Launch call while one is already running a clean no-op instead.
+let psLaunchInProgress = false;
+
+async function launchPS() {
+  if (psLaunchInProgress) {
+    addLog('ps', 'Launch already in progress — ignoring duplicate request.', 'info');
+    return { ok: false, error: 'A launch is already in progress' };
+  }
+  psLaunchInProgress = true;
+  // Safety valve — never let this lock stick forever if something downstream
+  // hangs; force-reset also clears it immediately regardless of this timer.
+  const unlockSafety = setTimeout(() => { psLaunchInProgress = false; }, 60000);
+
+  if (!fs.existsSync(PS_BAT)) {
+    clearTimeout(unlockSafety);
+    psLaunchInProgress = false;
+    return { ok: false, error: 'launch_pixelstream.bat not found at: ' + PS_BAT };
+  }
+
+  const clearedStale = await killPSProcesses();
+  if (clearedStale) addLog('ps', 'Cleared a lingering previous session before relaunching.', 'info');
+
+  addLog('ps', 'Fetching fresh Cloudflare TURN credentials…', 'info');
+  const turnCreds = await fetchTurnCredentials();
+  const spawnEnv = { ...process.env };
+  if (turnCreds) {
+    Object.assign(spawnEnv, turnCreds);
+    addLog('ps', `Using Cloudflare TURN: ${turnCreds.TURN_SERVER}`, 'ok');
+  } else {
+    // Explicitly blank rather than leaving unset, so a stale value from an
+    // earlier run can never leak through — launch_pixelstream.bat's own
+    // fallback (the VPS default in common.bat) kicks in on an empty value.
+    spawnEnv.TURN_SERVER = '';
+    spawnEnv.TURN_USER = '';
+    spawnEnv.TURN_PASS = '';
+    addLog('ps', 'Could not fetch Cloudflare TURN credentials — falling back to the VPS default.', 'info');
+  }
 
   addLog('ps', 'Starting launch_pixelstream.bat…', 'info');
   broadcast('ps-status', { status: 'starting' });
 
-  // Launch bat in a new visible terminal window — fire and forget
-  // We poll Wilbur's port to detect when stream is live
-  const batProcess = spawn('cmd.exe', ['/k', PS_BAT], {
-    cwd: BAT_DIR,
-    detached: true,
-    shell: false,
-    stdio: 'ignore',
-  });
-  batProcess.unref();
-  psProcess = batProcess;
+  // Wilbur intermittently never comes up at all with zero error output —
+  // observed directly, root cause not pinned down despite extensive testing
+  // (suspected Windows-level flakiness in the `start "Title" cmd /k "path"`
+  // invocation under repeated/rapid cycling, not something fixable from here
+  // with confidence). Rather than leave a session stuck on a silent failure,
+  // this retries once automatically if Wilbur doesn't answer within 20s.
+  const WILBUR_TIMEOUT_MS = 20000;
+  let attempt = 1;
 
-  lastPSStatus = 'starting';
-  broadcast('ps-status', { status: 'starting' });
-  addLog('ps', 'launch_pixelstream.bat started in terminal window.', 'info');
-  addLog('ps', 'Polling for Wilbur on port 80…', 'info');
+  function startAttempt() {
+    // Launch bat in a new visible terminal window — fire and forget
+    // We poll Wilbur's port to detect when stream is live
+    const batProcess = spawn('cmd.exe', ['/k', PS_BAT], {
+      cwd: BAT_DIR,
+      env: spawnEnv,
+      detached: true,
+      shell: false,
+      stdio: 'ignore',
+    });
+    batProcess.unref();
+    psProcess = batProcess;
 
-  // Poll port 80 to detect when Wilbur is live
-  let psPolling = true;
-  const net = require('net');
-  const pollPS = setInterval(() => {
+    lastPSStatus = 'starting';
+    broadcast('ps-status', { status: 'starting' });
+    if (attempt > 1) addLog('ps', `Retry attempt ${attempt}: starting launch_pixelstream.bat…`, 'info');
+    else addLog('ps', 'launch_pixelstream.bat started in terminal window.', 'info');
+    addLog('ps', 'Polling for Wilbur on port 80…', 'info');
+
+    // Poll port 80 to detect when Wilbur is live
+    let psPolling = true;
+    const net = require('net');
+
+    const wilburTimeout = setTimeout(async () => {
+      if (!psPolling) return;
+      psPolling = false;
+      clearInterval(pollPS);
+      if (attempt === 1) {
+        addLog('ps', `Wilbur did not come up within ${WILBUR_TIMEOUT_MS / 1000}s — retrying once automatically.`, 'err');
+        await killPSProcesses();
+        attempt = 2;
+        startAttempt();
+      } else {
+        addLog('ps', 'Wilbur still did not come up after a retry — giving up. Check the "PS Signalling Server" window manually.', 'err');
+        lastPSStatus = 'stopped';
+        broadcast('ps-status', { status: 'stopped' });
+        clearTimeout(unlockSafety);
+        psLaunchInProgress = false;
+      }
+    }, WILBUR_TIMEOUT_MS);
+
+    const pollPS = setInterval(() => {
     if (!psPolling) { clearInterval(pollPS); return; }
     const sock = net.createConnection({ port: 80, host: '127.0.0.1' });
     sock.setTimeout(1000);
@@ -104,6 +290,7 @@ function launchPS() {
       if (!psPolling) return;
       psPolling = false;
       clearInterval(pollPS);
+      clearTimeout(wilburTimeout);
       lastPSStatus = 'running';
       broadcast('ps-status', { status: 'running' });
       addLog('ps', 'Wilbur signaling server detected on port 80 ✓', 'ok');
@@ -127,6 +314,8 @@ function launchPS() {
           lastPSStatus = 'streaming';
       broadcast('ps-status', { status: 'streaming' });
           addLog('ps', 'UE5 streamer connected ✓ Stream is live!', 'ok');
+          clearTimeout(unlockSafety);
+          psLaunchInProgress = false;
         });
         s2.on('error', () => { try { s2.destroy(); } catch(e){} });
         s2.on('timeout', () => { try { s2.destroy(); } catch(e){} });
@@ -134,17 +323,32 @@ function launchPS() {
     });
     sock.on('error', () => { try { sock.destroy(); } catch(e){} });
     sock.on('timeout', () => { try { sock.destroy(); } catch(e){} });
-  }, 3000);
+    }, 3000);
+  }
 
+  startAttempt();
   return { ok: true };
 }
 
-function launchCF() {
-  if (cfProcess) return { ok: false, error: 'Already running' };
+let cfLaunchInProgress = false;
+
+async function launchCF() {
+  if (cfLaunchInProgress) {
+    addLog('cf', 'Tunnel launch already in progress — ignoring duplicate request.', 'info');
+    return { ok: false, error: 'A tunnel launch is already in progress' };
+  }
+  cfLaunchInProgress = true;
+  const cfUnlockSafety = setTimeout(() => { cfLaunchInProgress = false; }, 45000);
+
   if (!fs.existsSync(CF_BAT)) {
+    clearTimeout(cfUnlockSafety);
+    cfLaunchInProgress = false;
     addLog('cf', 'expose_cloudflare_tunnel.bat not found at: ' + CF_BAT, 'err');
     return { ok: false, error: 'expose_cloudflare_tunnel.bat not found at: ' + CF_BAT };
   }
+
+  const clearedStale = await killCFProcesses();
+  if (clearedStale) addLog('cf', 'Cleared a lingering previous tunnel before relaunching.', 'info');
 
   addLog('cf', 'Starting expose_cloudflare_tunnel.bat…', 'info');
   broadcast('cf-status', { status: 'connecting' });
@@ -182,6 +386,8 @@ function launchCF() {
       lastCFStatus = 'active';
       addLog('cf', 'Tunnel connected — api.g-741studio.com / stream.g-741studio.com live.', 'ok');
       broadcast('cf-status', { status: 'active', url: tunnelURL });
+      clearTimeout(cfUnlockSafety);
+      cfLaunchInProgress = false;
     });
     sock.on('error', () => { try { sock.destroy(); } catch(e){} });
     sock.on('timeout', () => { try { sock.destroy(); } catch(e){} });
@@ -198,28 +404,97 @@ function launchCF() {
   return { ok: true };
 }
 
-function stopPS() {
+async function stopPS() {
+  psLaunchInProgress = false; // a manual stop always clears this, regardless of the safety timer
+  broadcast('ps-status', { status: 'stopping' });
+  addLog('ps', 'Stopping stream…', 'info');
+
+  await killPSProcesses();
+
   lastPSStatus = 'stopped';
   broadcast('ps-status', { status: 'stopped' });
-  spawn('taskkill', ['/F', '/IM', 'ArchVizProject3.exe'], { shell: true });
-  spawn('taskkill', ['/F', '/IM', 'node.exe', '/FI', 'MEMUSAGE gt 50000'], { shell: true });
-  if (psProcess) { try { psProcess.kill(); } catch(e){} }
-  psProcess = null;
-  addLog('ps', 'Stream stopped.', 'info');
+  addLog('ps', 'Stream stopped — UE5 and Wilbur confirmed killed.', 'ok');
   resetRoom();
   endLobbyTurnIfActive();
   return { ok: true };
 }
 
-function stopCF() {
+async function stopCF() {
+  cfLaunchInProgress = false;
+  broadcast('cf-status', { status: 'stopping' });
+  addLog('cf', 'Closing tunnel…', 'info');
+
+  await killCFProcesses();
+  tunnelURL = '';
+
+  lastCFStatus = 'stopped';
+  broadcast('cf-status', { status: 'stopped', url: '' });
+  addLog('cf', 'Tunnel closed.', 'ok');
+  return { ok: true };
+}
+
+// Nuclear option for when something's genuinely stuck — kills everything
+// unconditionally and resets all in-memory state (lobby queue, current turn,
+// room/control state), independent of whatever the launcher currently thinks
+// is running.
+async function forceReset() {
+  psLaunchInProgress = false;
+  cfLaunchInProgress = false;
+  addLog('ps', 'Force reset requested — clearing all processes and state.', 'info');
+  await Promise.all([killPSProcesses(), killCFProcesses()]);
+  lastPSStatus = 'stopped';
   lastCFStatus = 'stopped';
   tunnelURL = '';
+  broadcast('ps-status', { status: 'stopped' });
   broadcast('cf-status', { status: 'stopped', url: '' });
-  spawn('taskkill', ['/F', '/IM', 'cloudflared.exe'], { shell: true });
-  if (cfProcess) { try { cfProcess.kill(); } catch(e){} }
-  cfProcess = null;
-  addLog('cf', 'Tunnel closed.', 'info');
+  lobbyQueue = [];
+  clearTurnTimer();
+  currentTurn = null;
+  resetRoom();
+  addLog('ps', 'Force reset complete — clean slate.', 'ok');
   return { ok: true };
+}
+
+// ── HEALTH CHECK — catch drift between assumed and actual state ──
+// Nothing above ever rechecks its own assumptions once a status is set, so a
+// UE5 crash or a manually-closed terminal window used to leave the UI lying
+// about state indefinitely (showing "streaming" forever with nothing behind
+// it). This periodically verifies against the real OS process list and
+// self-corrects — the launcher never again reports a truth it hasn't checked.
+setInterval(async () => {
+  // 'starting' is deliberately excluded too — UE5 genuinely isn't running yet
+  // during the TURN fetch + Wilbur boot delay that precedes it (~10-15s), and
+  // this fired mid-startup during testing, incorrectly declaring a crash and
+  // resetting status back to 'stopped' before UE5 ever got the chance to
+  // launch. Only 'running' and 'streaming' mean UE5 is expected to exist.
+  if (lastPSStatus !== 'running' && lastPSStatus !== 'streaming') return;
+  const stillUp = await isProcessRunning('ArchVizProject3.exe');
+  if (!stillUp) {
+    addLog('ps', 'UE5 process is gone but was never stopped through the launcher — correcting status.', 'err');
+    lastPSStatus = 'stopped';
+    psProcess = null;
+    broadcast('ps-status', { status: 'stopped' });
+    resetRoom();
+    endLobbyTurnIfActive();
+  }
+}, 8000);
+
+// ── SESSION MODE ─────────────────────────────────────────────
+// 'turns'  — today's default: public visitors queue via /api/lobby/*, each
+//            gets a confirmed, exclusive 15-minute turn, then the next
+//            queued visitor is served. Good for unattended public access.
+// 'free'   — no queue, no forced turn timer. Meant for when you (or an
+//            agent) are actively driving a session yourself and want it to
+//            just stay up — multi-viewer coordination is handled entirely
+//            by the room/raise-hand system instead of the lobby.
+let sessionMode = 'turns';
+
+function setSessionMode(mode) {
+  if (mode !== 'turns' && mode !== 'free') return { ok: false, error: 'mode must be "turns" or "free"' };
+  sessionMode = mode;
+  addLog('ps', `Session mode set to "${mode}".`, 'ok');
+  broadcast('session-mode', { mode });
+  return { ok: true, mode };
 }
 
 // ── LOBBY QUEUE ──────────────────────────────────────────────
@@ -292,6 +567,9 @@ function lobbyStatusFor(id) {
 }
 
 function joinLobby(name, ip) {
+  if (sessionMode === 'free') {
+    return { ok: true, free: true, psStatus: lastPSStatus, message: 'Open session — no queue, connect directly.' };
+  }
   const now = Date.now();
   const lastJoin = lastJoinByIP.get(ip) || 0;
   if (now - lastJoin < JOIN_COOLDOWN_MS) {
@@ -315,6 +593,7 @@ function leaveLobby(id) {
 }
 
 function confirmTurn(id) {
+  if (sessionMode === 'free') return { ok: false, error: 'Free mode has no turn queue to confirm.' };
   if (!currentTurn || currentTurn.id !== id || currentTurn.status !== 'confirming') {
     return { ok: false, error: 'Not your turn, or it already expired' };
   }
@@ -469,7 +748,7 @@ const server = http.createServer((req, res) => {
   // Admin-only routes — anything that stops/kills processes or manages the
   // tunnel. Not called by the public landing page, only by the local
   // launcher-client.html admin UI, which sends the key automatically.
-  const ADMIN_ROUTES = ['/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url'];
+  const ADMIN_ROUTES = ['/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set'];
   if (ADMIN_ROUTES.includes(parsedUrl.pathname) && !isAdmin(req, parsedUrl)) {
     res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
@@ -494,6 +773,7 @@ const server = http.createServer((req, res) => {
     // Send current state immediately on connect
     res.write('event: ps-status\ndata: ' + JSON.stringify({ status: psProcess ? lastPSStatus : 'stopped' }) + '\n\n');
     res.write('event: cf-status\ndata: ' + JSON.stringify({ status: cfProcess ? lastCFStatus : 'stopped', url: tunnelURL }) + '\n\n');
+    res.write('event: session-mode\ndata: ' + JSON.stringify({ mode: sessionMode }) + '\n\n');
     if (tunnelURL) {
       res.write('event: cf-status\ndata: ' + JSON.stringify({ status: 'active', url: tunnelURL }) + '\n\n');
     }
@@ -510,9 +790,10 @@ const server = http.createServer((req, res) => {
 
   // API endpoints
   if (url === '/api/launch-ps' && req.method === 'POST') {
-    const result = launchPS();
-    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(JSON.stringify(result));
+    launchPS().then(result => {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify(result));
+    });
     return;
   }
 
@@ -646,23 +927,53 @@ const server = http.createServer((req, res) => {
   }
 
   if (url === '/api/launch-cf' && req.method === 'POST') {
-    const result = launchCF();
-    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(JSON.stringify(result));
+    launchCF().then(result => {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify(result));
+    });
     return;
   }
 
   if (url === '/api/stop-ps' && req.method === 'POST') {
-    const result = stopPS();
-    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(JSON.stringify(result));
+    stopPS().then(result => {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify(result));
+    });
     return;
   }
 
   if (url === '/api/stop-cf' && req.method === 'POST') {
-    const result = stopCF();
+    stopCF().then(result => {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify(result));
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/session-mode' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(JSON.stringify(result));
+    res.end(JSON.stringify({ mode: sessionMode }));
+    return;
+  }
+
+  if (url === '/api/session-mode/set' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      let mode = '';
+      try { mode = JSON.parse(body || '{}').mode || ''; } catch (e) {}
+      const result = setSessionMode(mode);
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify(result));
+    });
+    return;
+  }
+
+  if (url === '/api/force-reset' && req.method === 'POST') {
+    forceReset().then(result => {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify(result));
+    });
     return;
   }
 
@@ -685,15 +996,17 @@ const server = http.createServer((req, res) => {
   }
 
   if (url === '/api/stop-all' && req.method === 'POST') {
-    stopPS();
-    stopCF();
-    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(JSON.stringify({ ok: true }));
-    // Give processes time to die then kill launcher server itself
-    setTimeout(() => {
-      addLog('ps', 'Launcher server shutting down.', 'info');
-      process.exit(0);
-    }, 2000);
+    // This used to also kill launcher-server.js itself 2 seconds after
+    // responding — meaning the UI would show "ready to launch" right as the
+    // entire backend was about to disappear, so the next Launch click hit a
+    // dead server. Stop All now does exactly what its name says: stop the
+    // stream and tunnel, nothing else. The admin server stays up so
+    // launch/stop can be repeated indefinitely in one session. To actually
+    // shut the launcher down, close its terminal window or Ctrl+C it.
+    Promise.all([stopPS(), stopCF()]).then(() => {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: true }));
+    });
     return;
   }
 
@@ -737,13 +1050,27 @@ const server = http.createServer((req, res) => {
       ps: lastPSStatus,
       cf: lastCFStatus,
       tunnelURL,
-      roomCount: room.participants.size
+      roomCount: room.participants.size,
+      sessionMode
     }));
     return;
   }
 
-  // Serve launcher UI
+  // Serve launcher UI — LOCAL ACCESS ONLY. This page embeds the real
+  // ADMIN_KEY directly in its HTML/JS source. This same server is tunneled
+  // publicly as api.g-741studio.com, and this route had no gate at all: any
+  // visitor could load it over the public tunnel, view-source, and get full
+  // admin control (stop-all, force-reset, tunnel management). Cloudflare
+  // stamps every request that actually traversed its edge with a `cf-ray`
+  // header — a direct local request never has one — so that's used here to
+  // block the admin page specifically from the public path while leaving
+  // local access (how you actually use this panel) completely unaffected.
   if (url === '/' || url === '/index.html') {
+    if (req.headers['cf-ray']) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
     const uiPath = path.join(BAT_DIR, 'launcher-client.html');
     if (fs.existsSync(uiPath)) {
       const html = fs.readFileSync(uiPath, 'utf8').replace('__ADMIN_KEY__', ADMIN_KEY);
@@ -777,9 +1104,11 @@ process.on('unhandledRejection', err => {
   console.error('[Server] Unhandled rejection (non-fatal):', err);
 });
 
-process.on('SIGINT', () => {
-  stopPS();
-  stopCF();
+process.on('SIGINT', async () => {
+  // Now that stopPS/stopCF are async and actually verify the kill, awaiting
+  // them here matters — exiting immediately used to race the taskkill calls,
+  // sometimes leaving Wilbur or UE5 orphaned on Ctrl+C.
+  await Promise.all([stopPS(), stopCF()]);
   process.exit(0);
 });
 

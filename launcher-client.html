@@ -121,6 +121,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:1
           <span id="ps-status-text">Idle</span>
         </div>
         <div style="flex:1"></div>
+        <!-- Session mode toggle -->
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dimmer);">
+            <i class="ti ti-users" aria-hidden="true"></i> Free Session
+          </span>
+          <label class="toggle-wrap" title="Off: turn-based public queue (15-min turns). On: open session, no queue, no forced timeout.">
+            <input type="checkbox" id="mode-toggle" onchange="onToggleMode(this)">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
         <!-- Tunnel toggle -->
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dimmer);">
@@ -267,6 +277,12 @@ function connectSSE() {
     setCFState(d.status, d.url);
   });
 
+  es.addEventListener('session-mode', e => {
+    const d = JSON.parse(e.data);
+    const toggle = document.getElementById('mode-toggle');
+    if (toggle) toggle.checked = (d.mode === 'free');
+  });
+
   es.onerror = () => {
     // reconnecting silently
   };
@@ -284,6 +300,27 @@ async function api(endpoint) {
   } catch(e) {
     addLog({ ts: ts(), msg: 'Server error: ' + e.message, type: 'err' });
     return { ok: false };
+  }
+}
+
+async function onToggleMode(el) {
+  const mode = el.checked ? 'free' : 'turns';
+  try {
+    const resp = await fetch('/api/session-mode/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
+      body: JSON.stringify({ mode }),
+    });
+    const d = await resp.json();
+    if (d.ok) {
+      addLog({ ts: ts(), msg: mode === 'free' ? 'Free session mode — no queue, no forced timeout.' : 'Turn-based mode — 15-min public queue restored.', type: 'ok' });
+    } else {
+      addLog({ ts: ts(), msg: 'Failed to change session mode: ' + (d.error || 'unknown error'), type: 'err' });
+      el.checked = !el.checked;
+    }
+  } catch (e) {
+    addLog({ ts: ts(), msg: 'Failed to change session mode: ' + e.message, type: 'err' });
+    el.checked = !el.checked;
   }
 }
 
@@ -308,6 +345,12 @@ function onToggleCF(el) {
 }
 
 async function launchAll() {
+  // Disable immediately, before any server round-trip — the server now
+  // guards against overlapping launches too, but a click that visibly does
+  // nothing for a moment is exactly what invited a second click during
+  // testing, which produced real port-conflict crashes from two launches
+  // racing each other.
+  document.getElementById('ps-start-btn').disabled = true;
   if (cfEnabled) {
     addLog({ ts: ts(), msg: 'Starting Cloudflare tunnel first…', type: 'info' });
     await api('/api/launch-cf');
@@ -423,6 +466,8 @@ setInterval(async () => {
     const cfOrder = ['stopped','connecting','active'];
     if (d2.ps && psOrder.indexOf(d2.ps) > psOrder.indexOf(psState)) setPSState(d2.ps);
     if (d2.cf && cfOrder.indexOf(d2.cf) > cfOrder.indexOf(cfState)) setCFState(d2.cf, d2.tunnelURL || tunnelURL);
+    const modeToggle = document.getElementById('mode-toggle');
+    if (modeToggle && d2.sessionMode && !modeToggle.matches(':focus')) modeToggle.checked = (d2.sessionMode === 'free');
   } catch(e) {}
 }, 2000);
 </script>
