@@ -243,10 +243,15 @@ async function launchPS() {
   function startAttempt() {
     // Launch bat in a new visible terminal window — fire and forget
     // We poll Wilbur's port to detect when stream is live
+    // `detached` (Windows: CREATE_NEW_PROCESS_GROUP) was suspected as a
+    // contributor to Wilbur intermittently failing to start at all under
+    // this spawn (never reproduced when launched by hand) — .unref() alone
+    // already covers "don't let this block Node from exiting", so detached
+    // was dropped as a cheap, low-risk thing to try. Not proven to fully
+    // fix it; the auto-retry above remains the real safety net.
     const batProcess = spawn('cmd.exe', ['/k', PS_BAT], {
       cwd: BAT_DIR,
       env: spawnEnv,
-      detached: true,
       shell: false,
       stdio: 'ignore',
     });
@@ -356,7 +361,6 @@ async function launchCF() {
   // Launch CF bat in a new visible terminal — fire and forget
   const cfBatProcess = spawn('cmd.exe', ['/k', CF_BAT], {
     cwd: BAT_DIR,
-    detached: true,
     shell: false,
     stdio: 'ignore',
   });
@@ -550,7 +554,12 @@ function lobbyStatusFor(id) {
   if (currentTurn && currentTurn.id === id) {
     return {
       state: currentTurn.status, // 'confirming' | 'active'
-      msLeft: Math.max(0, currentTurn.deadline - Date.now()),
+      // deadline isn't set until the stream actually confirms live (see
+      // watchLaunchOutcome) — null here means "still launching", not "no
+      // time left", so this can't collapse to NaN/0 while a visitor's
+      // launch is still in flight.
+      msLeft: currentTurn.deadline ? Math.max(0, currentTurn.deadline - Date.now()) : null,
+      launching: currentTurn.status === 'active' && !currentTurn.deadline,
       position: 0,
       queueLength: lobbyQueue.length,
       psStatus: lastPSStatus,
@@ -599,15 +608,48 @@ function confirmTurn(id) {
   }
   clearTurnTimer();
   currentTurn.status = 'active';
-  currentTurn.deadline = Date.now() + SESSION_DURATION_MS;
-  addLog('lobby', `${currentTurn.name || 'Visitor'} confirmed — launching (15 min turn)`, 'ok');
+  currentTurn.deadline = null; // clear the leftover 30s confirm-grace deadline from advanceQueue()
+  // No deadline set yet — the real 15-minute clock only starts once the
+  // stream actually confirms live (see watchLaunchOutcome below). Launch can
+  // legitimately take 20-40s+ with the retry logic, and can fail outright;
+  // charging that against the visitor's session, or leaving their "turn"
+  // occupying the queue for the full 15 minutes on a launch that never came
+  // up, both wasted real queue time for the next person for no reason.
+  const confirmedName = currentTurn.name || 'Visitor';
+  addLog('lobby', `${confirmedName} confirmed — launching…`, 'ok');
   resetRoom();
   launchPS();
-  turnTimer = setTimeout(() => {
-    addLog('lobby', `${currentTurn ? (currentTurn.name || 'Visitor') : 'Session'}'s 15 minutes are up`, 'info');
-    stopPS();
-  }, SESSION_DURATION_MS);
+  watchLaunchOutcome(id, confirmedName);
   return { ok: true };
+}
+
+// Polls the real launch outcome instead of assuming launchPS() succeeded
+// just because it returned — that promise resolves as soon as the attempt
+// is *kicked off*, not once Wilbur/UE5 are actually confirmed live.
+function watchLaunchOutcome(turnId, name) {
+  const startedAt = Date.now();
+  const MAX_WAIT_MS = 60000; // comfortably past launchPS()'s own ~40s retry ceiling
+  const check = setInterval(() => {
+    const stillThisTurn = currentTurn && currentTurn.id === turnId && currentTurn.status === 'active';
+    if (!stillThisTurn) { clearInterval(check); return; } // turn already ended some other way
+
+    if (lastPSStatus === 'streaming') {
+      clearInterval(check);
+      currentTurn.deadline = Date.now() + SESSION_DURATION_MS;
+      addLog('lobby', `${name}'s stream is live — 15 minute turn starts now`, 'ok');
+      turnTimer = setTimeout(() => {
+        addLog('lobby', `${currentTurn ? (currentTurn.name || 'Visitor') : 'Session'}'s 15 minutes are up`, 'info');
+        stopPS();
+      }, SESSION_DURATION_MS);
+      return;
+    }
+
+    if (lastPSStatus === 'stopped' || Date.now() - startedAt > MAX_WAIT_MS) {
+      clearInterval(check);
+      addLog('lobby', `${name}'s launch never came up — releasing their turn to the next person in queue.`, 'err');
+      endLobbyTurnIfActive();
+    }
+  }, 2000);
 }
 
 // ── ROOM — in-session participants, raised hands, camera control ──
