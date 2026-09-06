@@ -104,6 +104,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:1
   <div class="header">
     <span class="logo">ArchViz</span>
     <span class="logo-sub">Stream Launcher · UE5.7</span>
+    <span class="logo-sub" id="host-name-label" style="margin-left:auto;"></span>
   </div>
 
 
@@ -468,6 +469,8 @@ setInterval(async () => {
     if (d2.cf && cfOrder.indexOf(d2.cf) > cfOrder.indexOf(cfState)) setCFState(d2.cf, d2.tunnelURL || tunnelURL);
     const modeToggle = document.getElementById('mode-toggle');
     if (modeToggle && d2.sessionMode && !modeToggle.matches(':focus')) modeToggle.checked = (d2.sessionMode === 'free');
+    const hostLabel = document.getElementById('host-name-label');
+    if (hostLabel && d2.hostName) hostLabel.textContent = d2.hostName;
   } catch(e) {}
 }, 2000);
 </script>

@@ -20,6 +20,20 @@ const BAT_DIR = __dirname;
 const PS_BAT  = path.join(BAT_DIR, 'launch_pixelstream.bat');
 const CF_BAT  = path.join(BAT_DIR, 'expose_cloudflare_tunnel.bat');
 
+// Machine-specific settings (host.config, shared with launch_pixelstream.bat
+// and start_wilbur.bat) — one file to edit if this ever runs on a different
+// machine. Only HOST_NAME is actually used here (shown via /api/status so
+// the admin panel/landing page can display which machine is live); the
+// path values exist for the batch scripts, not this file.
+const HOST_CONFIG_FILE = path.join(BAT_DIR, 'host.config');
+let HOST_NAME = "Erick's GPU Rig";
+if (fs.existsSync(HOST_CONFIG_FILE)) {
+  fs.readFileSync(HOST_CONFIG_FILE, 'utf8').split('\n').forEach(line => {
+    const m = line.trim().match(/^HOST_NAME=(.+)$/);
+    if (m) HOST_NAME = m[1].trim();
+  });
+}
+
 // ── ADMIN AUTH ───────────────────────────────────────────────
 // This server is reachable from the public internet via the
 // api.g-741studio.com Cloudflare tunnel (see config.yml). /api/launch-ps
@@ -301,10 +315,6 @@ async function launchPS() {
       addLog('ps', 'Wilbur signaling server detected on port 80 ✓', 'ok');
       addLog('ps', 'Waiting for UE5 streamer to connect…', 'info');
 
-      // Watch Wilbur log for DefaultStreamer connection
-      const wilburLogDir = path.join(__dirname,
-        'Y:\\Installed Software\\3D\\UE5\\UE_5.7\\Engine\\Plugins\\Media\\PixelStreaming\\Resources\\WebServers\\SignallingWebServer\\logs'
-      );
       let streamerDetected = false;
       const pollStreamer = setInterval(() => {
         if (streamerDetected) { clearInterval(pollStreamer); return; }
@@ -1093,7 +1103,8 @@ const server = http.createServer((req, res) => {
       cf: lastCFStatus,
       tunnelURL,
       roomCount: room.participants.size,
-      sessionMode
+      sessionMode,
+      hostName: HOST_NAME
     }));
     return;
   }

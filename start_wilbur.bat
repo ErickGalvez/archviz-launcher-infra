@@ -24,7 +24,15 @@
 ::    launcher-server.js before spawning launch_pixelstream.bat, which this
 ::    script inherits normally) are passed through here as real arguments.
 setlocal EnableDelayedExpansion
-set WDIR=Y:\Installed Software\3D\UE5\UE_5.7\Engine\Plugins\Media\PixelStreaming\Resources\WebServers\SignallingWebServer\platform_scripts\cmd
+:: SIGNAL_DIR comes from host.config (same file launch_pixelstream.bat
+:: reads) — falls back to today's known-good path if that file is missing.
+set SIGNAL_DIR=Y:\Installed Software\3D\UE5\UE_5.7\Engine\Plugins\Media\PixelStreaming\Resources\WebServers\SignallingWebServer
+if exist "%~dp0host.config" (
+    for /f "usebackq tokens=1,2 delims==" %%A in ("%~dp0host.config") do (
+        if "%%A"=="SIGNAL_DIR" set SIGNAL_DIR=%%B
+    )
+)
+set WDIR=!SIGNAL_DIR!\platform_scripts\cmd
 cd /d "!WDIR!"
 
 set TURN_ARGS=

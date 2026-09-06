@@ -5,8 +5,18 @@ setlocal EnableDelayedExpansion
 ::  ArchViz client presentations · UE5.7
 :: ============================================================
 :: ── CONFIG ──────────────────────────────────────────────────
+:: Machine-specific paths come from host.config — one file to edit if this
+:: ever needs to run on a different machine, instead of hunting through
+:: this script. Falls back to today's known-good values if that file is
+:: ever missing, so this still runs standalone.
 set UE5_EXE=Y:\ArchVizChallenge\UE5ProjectV2\ArchVizProject3\PKGV3\Windows\ArchVizProject3.exe
 set SIGNAL_DIR=Y:\Installed Software\3D\UE5\UE_5.7\Engine\Plugins\Media\PixelStreaming\Resources\WebServers\SignallingWebServer
+if exist "%~dp0host.config" (
+    for /f "usebackq tokens=1,2 delims==" %%A in ("%~dp0host.config") do (
+        if "%%A"=="UE5_EXE" set UE5_EXE=%%B
+        if "%%A"=="SIGNAL_DIR" set SIGNAL_DIR=%%B
+    )
+)
 set HTTP_PORT=80
 set STREAMER_PORT=8888
 set STREAM_W=1920
