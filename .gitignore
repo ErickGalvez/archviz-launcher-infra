@@ -11,3 +11,6 @@ cloudflared-windows-amd64.exe
 curl
 public
 rename
+
+# Runtime output - not source, regenerated every run
+*.log

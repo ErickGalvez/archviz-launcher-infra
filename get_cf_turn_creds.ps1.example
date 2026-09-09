@@ -1,0 +1,76 @@
+# ============================================================
+#  get_cf_turn_creds.ps1.example
+#
+#  Template for the real get_cf_turn_creds.ps1 - that file is
+#  gitignored (it holds a live API token) so a fresh clone never
+#  gets one. To set up a new host machine:
+#
+#    1. Copy this file to get_cf_turn_creds.ps1 (drop the .example)
+#    2. Fill in TURN_KEY_ID and TURN_KEY_API_TOKEN below - either
+#       reuse the values from the old machine, or generate a new
+#       Key ID + API Token in the Cloudflare dashboard under
+#       Realtime > TURN Keys.
+#
+#  Fetches a fresh short-lived Cloudflare Realtime TURN credential
+#  and writes it as KEY=VALUE lines to a fixed file next to this
+#  script for launch_pixelstream.bat to read.
+#
+#  NEVER commit the real get_cf_turn_creds.ps1 with real values -
+#  it's gitignored on purpose, keep it that way.
+# ============================================================
+
+$OUTPUT_FILE = Join-Path $PSScriptRoot "turn_creds.env"
+
+$TURN_KEY_ID        = "YOUR_TURN_KEY_ID_HERE"
+$TURN_KEY_API_TOKEN = "YOUR_TURN_KEY_API_TOKEN_HERE"
+$TTL_SECONDS         = 86400   # 24 hours - plenty for a demo session
+
+if (Test-Path $OUTPUT_FILE) { Remove-Item $OUTPUT_FILE -Force }
+
+if ($TURN_KEY_ID -eq "YOUR_TURN_KEY_ID_HERE") {
+    Write-Error "get_cf_turn_creds.ps1: Key ID/Token not configured yet."
+    exit 1
+}
+
+try {
+    $body = @{ ttl = $TTL_SECONDS } | ConvertTo-Json
+
+    $response = Invoke-RestMethod `
+        -Uri "https://rtc.live.cloudflare.com/v1/turn/keys/$TURN_KEY_ID/credentials/generate-ice-servers" `
+        -Method Post `
+        -Headers @{
+            "Authorization" = "Bearer $TURN_KEY_API_TOKEN"
+            "Content-Type"  = "application/json"
+        } `
+        -Body $body `
+        -TimeoutSec 10
+
+    # Find the entry that actually has turn: urls (the other entry is stun-only)
+    $turnEntry = $response.iceServers | Where-Object {
+        $_.urls -is [array] -and ($_.urls | Where-Object { $_ -like "turn:*" })
+    }
+
+    if (-not $turnEntry) {
+        Write-Error "get_cf_turn_creds.ps1: No turn: entry found in response."
+        exit 1
+    }
+
+    # Prefer the plain UDP url; strip the scheme and any query string since
+    # Wilbur's own template only wants a bare host:port
+    $udpUrl = $turnEntry.urls | Where-Object { $_ -like "turn:*transport=udp*" -and $_ -notlike "turns:*" } | Select-Object -First 1
+    if (-not $udpUrl) { $udpUrl = $turnEntry.urls | Select-Object -First 1 }
+
+    $hostPort = $udpUrl -replace '^turn:', '' -replace '\?.*$', ''
+
+    $lines = @(
+        "TURN_SERVER=$hostPort",
+        "TURN_USER=$($turnEntry.username)",
+        "TURN_PASS=$($turnEntry.credential)"
+    )
+    Set-Content -Path $OUTPUT_FILE -Value $lines -Encoding ASCII
+    $lines | ForEach-Object { Write-Output $_ }
+}
+catch {
+    Write-Error "get_cf_turn_creds.ps1: Failed to fetch Cloudflare TURN credentials - $_"
+    exit 1
+}

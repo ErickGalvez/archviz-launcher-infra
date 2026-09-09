@@ -35,7 +35,14 @@ if exist "%~dp0host.config" (
 set WDIR=!SIGNAL_DIR!\platform_scripts\cmd
 cd /d "!WDIR!"
 
+:: NOTE: deliberately unquoted. common.bat's ParseArgs reads these with bare
+:: %2 (not %~2), so a quoted value like "turn.cloudflare.com:3478" keeps its
+:: quote characters as part of TURN_SERVER's actual value. Those stray quotes
+:: then land inside the --peer_options JSON string start.bat builds, breaking
+:: cmd's quoting and killing Wilbur before it starts, with "The syntax of the
+:: command is incorrect." as the only symptom. Safe to leave unquoted since
+:: these values (hostname:port, hex tokens) never contain spaces.
 set TURN_ARGS=
-if not "!TURN_SERVER!"=="" set TURN_ARGS=--turn "!TURN_SERVER!" --turn-user "!TURN_USER!" --turn-pass "!TURN_PASS!"
+if not "!TURN_SERVER!"=="" set TURN_ARGS=--turn !TURN_SERVER! --turn-user !TURN_USER! --turn-pass !TURN_PASS!
 
 call "!WDIR!\start.bat" !TURN_ARGS!
