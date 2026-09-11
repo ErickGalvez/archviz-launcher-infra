@@ -522,10 +522,59 @@ const CONFIRM_GRACE_MS = 30 * 1000;
 const MAX_QUEUE_LENGTH = 20;
 const JOIN_COOLDOWN_MS = 5 * 1000;
 
-let lobbyQueue = [];       // [{id, name, joinedAt}]
-let currentTurn = null;    // {id, name, status: 'confirming'|'active', deadline}
+let lobbyQueue = [];       // [{id, name, joinedAt, userAgent, device}]
+let currentTurn = null;    // {id, name, status: 'confirming'|'active', deadline, userAgent, device}
 let turnTimer = null;
 const lastJoinByIP = new Map();
+
+// ── SESSION LOG — durable record of who connected, on what, and how the
+// launch actually went. Requested after a real iOS visit couldn't be
+// diagnosed: the backend already tracked launch success/timing, but never
+// captured what device made the request, and never wrote either to
+// anything that survived past the in-memory log's last-30-entries window.
+// One JSON line per concluded session (not committed to git - runtime data,
+// see .gitignore), covering both outcomes that actually matter: the launch
+// never came up, or it did and ran to completion.
+const SESSION_LOG_FILE = path.join(BAT_DIR, 'session-log.jsonl');
+function logSessionEvent(record) {
+  try {
+    fs.appendFileSync(SESSION_LOG_FILE, JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n');
+  } catch (e) { /* logging must never be why a session fails */ }
+}
+
+// Deliberately simple regex parsing, not a full UA-database library - this
+// only needs to answer "what OS/browser was this" for a handful of real
+// combinations (iOS/Android/desktop x Safari/Chrome/Firefox/Edge), not every
+// device that has ever existed.
+function parseUserAgent(ua) {
+  ua = ua || '';
+  let os = 'Unknown', osVersion = '', deviceType = 'desktop', m;
+
+  if ((m = ua.match(/iPhone OS (\d+)_(\d+)/)) || (m = ua.match(/CPU OS (\d+)_(\d+)/))) {
+    os = 'iOS'; osVersion = `${m[1]}.${m[2]}`; deviceType = 'mobile';
+  } else if ((m = ua.match(/iPad.*?OS (\d+)_(\d+)/))) {
+    os = 'iPadOS'; osVersion = `${m[1]}.${m[2]}`; deviceType = 'tablet';
+  } else if ((m = ua.match(/Android (\d+(?:\.\d+)?)/))) {
+    os = 'Android'; osVersion = m[1]; deviceType = /Mobile/.test(ua) ? 'mobile' : 'tablet';
+  } else if ((m = ua.match(/Windows NT (\d+\.\d+)/))) {
+    os = 'Windows'; osVersion = m[1];
+  } else if ((m = ua.match(/Mac OS X (\d+[_.]\d+)/))) {
+    os = 'macOS'; osVersion = m[1].replace('_', '.');
+  } else if (/Linux/.test(ua)) {
+    os = 'Linux';
+  }
+
+  let browser = 'Unknown', browserVersion = '';
+  if ((m = ua.match(/EdgA?\/(\d+)/))) { browser = 'Edge'; browserVersion = m[1]; }
+  else if ((m = ua.match(/OPR\/(\d+)/))) { browser = 'Opera'; browserVersion = m[1]; }
+  else if ((m = ua.match(/CriOS\/(\d+)/))) { browser = 'Chrome'; browserVersion = m[1]; }
+  else if ((m = ua.match(/FxiOS\/(\d+)/))) { browser = 'Firefox'; browserVersion = m[1]; }
+  else if ((m = ua.match(/Chrome\/(\d+)/))) { browser = 'Chrome'; browserVersion = m[1]; }
+  else if ((m = ua.match(/Firefox\/(\d+)/))) { browser = 'Firefox'; browserVersion = m[1]; }
+  else if ((m = ua.match(/Version\/(\d+)[.\d]*.*Safari/))) { browser = 'Safari'; browserVersion = m[1]; }
+
+  return { os, osVersion, deviceType, browser, browserVersion };
+}
 
 function genTicketId() {
   return crypto.randomBytes(8).toString('hex');
@@ -542,7 +591,7 @@ function advanceQueue() {
     return;
   }
   const next = lobbyQueue.shift();
-  currentTurn = { id: next.id, name: next.name, status: 'confirming', deadline: Date.now() + CONFIRM_GRACE_MS };
+  currentTurn = { id: next.id, name: next.name, status: 'confirming', deadline: Date.now() + CONFIRM_GRACE_MS, userAgent: next.userAgent, device: next.device };
   addLog('lobby', `Ticket up for ${next.name || 'a visitor'} — waiting to confirm (30s)`, 'info');
   turnTimer = setTimeout(() => {
     addLog('lobby', `${currentTurn.name || 'Visitor'} didn't confirm in time, skipping`, 'info');
@@ -585,7 +634,7 @@ function lobbyStatusFor(id) {
   };
 }
 
-function joinLobby(name, ip) {
+function joinLobby(name, ip, userAgent) {
   if (sessionMode === 'free') {
     return { ok: true, free: true, psStatus: lastPSStatus, message: 'Open session — no queue, connect directly.' };
   }
@@ -599,7 +648,8 @@ function joinLobby(name, ip) {
   }
   lastJoinByIP.set(ip, now);
   const id = genTicketId();
-  lobbyQueue.push({ id, name: (name || '').slice(0, 80), joinedAt: now });
+  const device = parseUserAgent(userAgent);
+  lobbyQueue.push({ id, name: (name || '').slice(0, 80), joinedAt: now, userAgent, device });
   addLog('lobby', `${name || 'A visitor'} joined the queue (position ${lobbyQueue.length})`, 'info');
   if (!currentTurn) advanceQueue();
   return { ok: true, id };
@@ -645,10 +695,13 @@ function watchLaunchOutcome(turnId, name) {
 
     if (lastPSStatus === 'streaming') {
       clearInterval(check);
+      const launchMs = Date.now() - startedAt;
+      const { userAgent, device } = currentTurn;
       currentTurn.deadline = Date.now() + SESSION_DURATION_MS;
       addLog('lobby', `${name}'s stream is live — 15 minute turn starts now`, 'ok');
       turnTimer = setTimeout(() => {
         addLog('lobby', `${currentTurn ? (currentTurn.name || 'Visitor') : 'Session'}'s 15 minutes are up`, 'info');
+        logSessionEvent({ name, userAgent, device, outcome: 'completed', launchMs, sessionMs: SESSION_DURATION_MS });
         stopPS();
       }, SESSION_DURATION_MS);
       return;
@@ -657,6 +710,7 @@ function watchLaunchOutcome(turnId, name) {
     if (lastPSStatus === 'stopped' || Date.now() - startedAt > MAX_WAIT_MS) {
       clearInterval(check);
       addLog('lobby', `${name}'s launch never came up — releasing their turn to the next person in queue.`, 'err');
+      logSessionEvent({ name, userAgent: currentTurn.userAgent, device: currentTurn.device, outcome: 'launch_failed', launchMs: Date.now() - startedAt });
       endLobbyTurnIfActive();
     }
   }, 2000);
@@ -856,7 +910,7 @@ const server = http.createServer((req, res) => {
       let name = '';
       try { name = JSON.parse(body || '{}').name || ''; } catch (e) {}
       const ip = req.socket.remoteAddress || 'unknown';
-      const result = joinLobby(name, ip);
+      const result = joinLobby(name, ip, req.headers['user-agent']);
       res.writeHead(result.ok ? 200 : 429, { 'Content-Type': 'application/json', ...CORS_HEADERS });
       res.end(JSON.stringify(result));
     });
