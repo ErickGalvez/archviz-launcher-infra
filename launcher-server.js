@@ -114,6 +114,35 @@ function isProcessRunning(name) {
   });
 }
 
+// killByPort only kills whatever's actually LISTENING (the inner
+// `node ./dist/index.js`) - it never touches the wrapping
+// `cmd /k start_wilbur.bat` shell that launched it (started as
+// `start "PS Signalling Server" cmd /k ...` in launch_pixelstream.bat), so
+// that window sits there orphaned once its child is gone. Over a day of
+// real visitors this piles up into a handful of half-dead terminal windows
+// that someone has to notice and close by hand.
+//
+// Window title looked like the obvious way to find it, but proved
+// unreliable by direct testing: cmd.exe's title tracks whatever's
+// currently in the foreground, so it drifts from "PS Signalling Server" to
+// the literal npm command line the moment npm takes over, and reverts to a
+// generic "C:\Windows\system32\cmd.exe" once npm exits/crashes - a title
+// far too broad to ever safely taskkill. A process's own command line,
+// unlike its window title, never changes after launch - matching on
+// "start_wilbur.bat" there reliably finds this exact wrapper shell (and
+// only this shell) regardless of what it's doing or showing right now.
+function killWilburWrapperShells() {
+  return new Promise(resolve => {
+    exec(`wmic process where "CommandLine like '%start_wilbur.bat%'" get ProcessId`, { timeout: EXEC_TIMEOUT_MS }, (err, stdout) => {
+      if (err || !stdout) return resolve(false);
+      const pids = stdout.split(/\s+/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
+      if (pids.length === 0) return resolve(false);
+      Promise.all(pids.map(pid => new Promise(res => exec(`taskkill /F /T /PID ${pid}`, { timeout: EXEC_TIMEOUT_MS }, () => res()))))
+        .then(() => resolve(true));
+    });
+  });
+}
+
 function killByPort(port) {
   return new Promise(resolve => {
     exec('netstat -ano', { timeout: EXEC_TIMEOUT_MS }, (err, stdout) => {
@@ -141,11 +170,12 @@ function killByPort(port) {
 // never block a fresh launch. Launch and Stop are idempotent either way.
 async function killPSProcesses() {
   const foundUE5 = await killByImageName('ArchVizProject3.exe');
+  const foundWrapper = await killWilburWrapperShells();
   const foundHttp = await killByPort(WILBUR_HTTP_PORT);
   const foundStreamer = await killByPort(WILBUR_STREAMER_PORT);
   if (psProcess) { try { psProcess.kill(); } catch (e) {} }
   psProcess = null;
-  const foundAnything = foundUE5 || foundHttp.length > 0 || foundStreamer.length > 0;
+  const foundAnything = foundUE5 || foundWrapper || foundHttp.length > 0 || foundStreamer.length > 0;
   if (foundAnything) {
     // A large loaded UE5 process can take several seconds to actually exit
     // even after taskkill reports success (observed ~3s for a 2GB+ process)
@@ -730,6 +760,7 @@ let room = {
   participants: new Map(), // id -> {id, name, role, joinedAt, lastSeen, raisedHand}
   hostId: null,
   controllerId: null,
+  everHadParticipant: false, // guards against ending a turn before anyone's even connected yet
 };
 let occupancyLog = [];
 
@@ -744,6 +775,26 @@ function resetRoom() {
   room.participants.clear();
   room.hostId = null;
   room.controllerId = null;
+  room.everHadParticipant = false;
+}
+
+// Called after someone leaves (explicitly or via heartbeat timeout) - if the
+// room has genuinely gone from "had someone" to "has no one", there's no
+// reason to keep charging the rest of the 15 minutes against the queue.
+// everHadParticipant guards the real launch window before anyone's browser
+// has connected yet, where the room is legitimately empty but the turn has
+// obviously not ended.
+function endTurnIfRoomNowEmpty() {
+  if (!room.everHadParticipant || room.participants.size > 0) return;
+  if (currentTurn && currentTurn.status === 'active' && currentTurn.deadline) {
+    addLog('lobby', `${currentTurn.name || 'Visitor'}'s session emptied out early - ending their turn now instead of waiting out the full 15 minutes.`, 'info');
+    logSessionEvent({
+      name: currentTurn.name, userAgent: currentTurn.userAgent, device: currentTurn.device,
+      outcome: 'ended_early_empty_room',
+      sessionMs: SESSION_DURATION_MS - Math.max(0, currentTurn.deadline - Date.now()),
+    });
+    stopPS();
+  }
 }
 
 function promoteNextHost() {
@@ -764,6 +815,7 @@ function roomJoin(name) {
   const isFirst = room.participants.size === 0;
   const p = { id, name: (name || '').slice(0, 40) || 'Guest', role: isFirst ? 'host' : 'guest', joinedAt: Date.now(), lastSeen: Date.now(), raisedHand: false };
   room.participants.set(id, p);
+  room.everHadParticipant = true;
   if (isFirst) { room.hostId = id; room.controllerId = id; }
   logOccupancy('joined', p.name);
   return { ok: true, id, role: p.role };
@@ -781,6 +833,7 @@ function roomLeave(id) {
   room.participants.delete(id);
   logOccupancy('left', p.name);
   if (room.controllerId === id || room.hostId === id) promoteNextHost();
+  endTurnIfRoomNowEmpty();
   return { ok: true };
 }
 
@@ -830,6 +883,7 @@ setInterval(() => {
       if (room.controllerId === id || room.hostId === id) promoteNextHost();
     }
   }
+  endTurnIfRoomNowEmpty();
 }, ROOM_PRUNE_INTERVAL_MS);
 
 // ── HTTP SERVER ──────────────────────────────────────────────
