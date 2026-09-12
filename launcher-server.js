@@ -57,6 +57,25 @@ function isAdmin(req, url) {
   return headerKey === ADMIN_KEY || queryKey === ADMIN_KEY;
 }
 
+// Separate, narrower-scoped key for QA dashboard writes (add/edit test
+// cases). Deliberately NOT the same as ADMIN_KEY: the QA dashboard is a
+// static page on a different origin (g-741studio.com, not
+// api.g-741studio.com) that has to embed this key in browser JS somehow to
+// call these endpoints - if it ever leaked, it should only ever grant
+// "edit test case text", never "stop the stream" / "kill processes" /
+// anything ADMIN_KEY can do. Same generate-once-and-persist pattern.
+const QA_KEY_FILE = path.join(BAT_DIR, 'qa.key');
+let QA_KEY;
+if (fs.existsSync(QA_KEY_FILE)) {
+  QA_KEY = fs.readFileSync(QA_KEY_FILE, 'utf8').trim();
+} else {
+  QA_KEY = crypto.randomBytes(24).toString('hex');
+  fs.writeFileSync(QA_KEY_FILE, QA_KEY);
+}
+function isQaAuthed(req) {
+  return req.headers['x-qa-key'] === QA_KEY;
+}
+
 // ── STATE ────────────────────────────────────────────────────
 let psProcess  = null;
 let cfProcess  = null;
@@ -886,12 +905,41 @@ setInterval(() => {
   endTurnIfRoomNowEmpty();
 }, ROOM_PRUNE_INTERVAL_MS);
 
+// ── QA TEST CASE STORE — persisted, versioned, cross-device ──
+// Previously the only way to add/edit a test case was hand-editing
+// testdata.js and pushing to git - fine for occasional updates, not for
+// active weekly testing. This makes the case library live: reads are
+// public (it's just test documentation), writes require QA_KEY. Every
+// update pushes the PREVIOUS version of the case into qaHistory before
+// overwriting, so nothing is ever silently lost to an edit - the whole
+// point of "versioned, with history" the dashboard needs.
+const QA_DATA_FILE = path.join(BAT_DIR, 'qa-data.json');
+let qaCases = [];
+let qaHistory = {}; // { [caseId]: [ { ...previousSnapshot, versionedAt } ] }
+
+function loadQaData() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(QA_DATA_FILE, 'utf8'));
+    qaCases = Array.isArray(parsed.cases) ? parsed.cases : [];
+    qaHistory = parsed.history && typeof parsed.history === 'object' ? parsed.history : {};
+  } catch (e) {
+    qaCases = [];
+    qaHistory = {};
+  }
+}
+function saveQaData() {
+  try {
+    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory }, null, 2));
+  } catch (e) { /* saving must never crash a request */ }
+}
+loadQaData();
+
 // ── HTTP SERVER ──────────────────────────────────────────────
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, x-qa-key',
 };
 
 const server = http.createServer((req, res) => {
@@ -917,6 +965,103 @@ const server = http.createServer((req, res) => {
   if (parsedUrl.pathname === '/events' && !isAdmin(req, parsedUrl)) {
     res.writeHead(401);
     res.end('Unauthorized');
+    return;
+  }
+
+  // ── QA TEST CASE API — read is public, writes need x-qa-key ──
+  if (parsedUrl.pathname === '/api/qa/cases' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ cases: qaCases }));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/qa/cases/history' && req.method === 'GET') {
+    const id = parsedUrl.searchParams.get('id') || '';
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ history: qaHistory[id] || [] }));
+    return;
+  }
+
+  // One-time bulk seed from testdata.js's existing array, run by the
+  // dashboard itself the first time it finds the store empty - avoids
+  // hand-copying 50+ cases into this file. Refuses to run if cases already
+  // exist, so it can never be used to silently clobber real data.
+  if (parsedUrl.pathname === '/api/qa/cases/seed' && req.method === 'POST') {
+    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      if (qaCases.length > 0) {
+        res.writeHead(409, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Store already seeded - refusing to overwrite existing cases' }));
+        return;
+      }
+      try {
+        const { cases } = JSON.parse(body || '{}');
+        if (!Array.isArray(cases)) throw new Error('cases must be an array');
+        qaCases = cases;
+        saveQaData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, count: qaCases.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/qa/cases/create' && req.method === 'POST') {
+    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { case: newCase } = JSON.parse(body || '{}');
+        if (!newCase || !newCase.id) throw new Error('missing case.id');
+        if (qaCases.some(c => c.id === newCase.id)) {
+          res.writeHead(409, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+          res.end(JSON.stringify({ ok: false, error: `${newCase.id} already exists` }));
+          return;
+        }
+        qaCases.push(newCase);
+        saveQaData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, case: newCase }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/qa/cases/update' && req.method === 'POST') {
+    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { case: updated, note } = JSON.parse(body || '{}');
+        if (!updated || !updated.id) throw new Error('missing case.id');
+        const idx = qaCases.findIndex(c => c.id === updated.id);
+        if (idx === -1) {
+          res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+          res.end(JSON.stringify({ ok: false, error: `${updated.id} not found` }));
+          return;
+        }
+        const previous = qaCases[idx];
+        if (!qaHistory[updated.id]) qaHistory[updated.id] = [];
+        qaHistory[updated.id].push({ ...previous, versionedAt: new Date().toISOString(), note: note || '' });
+        qaCases[idx] = updated;
+        saveQaData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, case: updated, versions: qaHistory[updated.id].length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
     return;
   }
 

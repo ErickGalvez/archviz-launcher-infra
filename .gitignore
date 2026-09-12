@@ -1,7 +1,11 @@
 # Secrets — never track these
 admin.key
+qa.key
 get_cf_turn_creds.ps1
 turn_creds.env
+
+# QA test case data - lives on the host, not in git (see qa/app.js)
+qa-data.json
 
 # Vendored binaries — not our source, just re-download if needed
 cloudflared.exe
