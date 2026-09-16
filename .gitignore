@@ -1,6 +1,8 @@
 # Secrets — never track these
 admin.key
 qa.key
+devconsole.key
+devconsole-github.key
 get_cf_turn_creds.ps1
 turn_creds.env
 
@@ -19,3 +21,7 @@ rename
 # Runtime output - not source, regenerated every run
 *.log
 session-log.jsonl
+devconsole-log.jsonl
+
+# Local dev-server config (machine-specific absolute paths)
+.claude/

@@ -934,12 +934,147 @@ function saveQaData() {
 }
 loadQaData();
 
+// ── DEV CONSOLE — voice-to-commit relay ───────────────────────
+// Dispatch creates a GitHub issue (title/body carry the transcript). A
+// pre-configured claude.ai routine, wired to fire on "issue opened" via a
+// GitHub webhook, picks it up off this host entirely: reads the issue,
+// implements the change, and opens a draft PR whose body includes
+// "Closes #N". This relay's whole job is: create the issue, poll GitHub
+// for the resulting PR, hand back its diff, and merge it on confirm.
+// The launcher repo is the one exception - merging its PR doesn't make
+// anything live by itself (this is a long-running process, not a static
+// site), so a merge there also pulls + restarts this process, relying on
+// the same self-healing listener_service.bat wrapper that already
+// relaunches it whenever it exits.
+const DEVCONSOLE_KEY_FILE = path.join(BAT_DIR, 'devconsole.key');
+let DEVCONSOLE_KEY;
+if (fs.existsSync(DEVCONSOLE_KEY_FILE)) {
+  DEVCONSOLE_KEY = fs.readFileSync(DEVCONSOLE_KEY_FILE, 'utf8').trim();
+} else {
+  DEVCONSOLE_KEY = crypto.randomBytes(24).toString('hex');
+  fs.writeFileSync(DEVCONSOLE_KEY_FILE, DEVCONSOLE_KEY);
+}
+function isDevConsoleAuthed(req) {
+  return req.headers['x-devconsole-key'] === DEVCONSOLE_KEY;
+}
+
+// GitHub token this relay uses to create issues / poll PRs / merge - a
+// fine-grained PAT scoped to Issues + Pull requests (read/write) on just
+// the repos below. Not auto-generated like the keys above: it has to come
+// from GitHub's own UI (Settings > Developer settings > Fine-grained
+// tokens), so this just reads whatever file you put it in.
+const DEVCONSOLE_GITHUB_KEY_FILE = path.join(BAT_DIR, 'devconsole-github.key');
+let DEVCONSOLE_GITHUB_KEY = '';
+if (fs.existsSync(DEVCONSOLE_GITHUB_KEY_FILE)) {
+  DEVCONSOLE_GITHUB_KEY = fs.readFileSync(DEVCONSOLE_GITHUB_KEY_FILE, 'utf8').trim();
+}
+
+// Add the launcher repo here once its routine + webhook are set up the
+// same way the website one is (see the devconsole plan notes).
+const DEVCONSOLE_REPOS = {
+  website: 'ErickGalvez/ARCHVIZ',
+};
+
+function ghHeaders(extra) {
+  return {
+    'Authorization': `token ${DEVCONSOLE_GITHUB_KEY}`,
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+}
+async function ghCreateIssue(repo, title, body) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+    method: 'POST',
+    headers: ghHeaders(),
+    body: JSON.stringify({ title, body, labels: ['devconsole'] }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'GitHub issue creation failed');
+  return data;
+}
+async function ghFindLinkedPR(repo, issueNumber) {
+  const q = encodeURIComponent(`repo:${repo} is:pr "Closes #${issueNumber}" in:body`);
+  const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: ghHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'GitHub search failed');
+  return (data.items && data.items[0]) || null;
+}
+async function ghGetDiff(repo, prNumber) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
+    headers: ghHeaders({ Accept: 'application/vnd.github.v3.diff' }),
+  });
+  if (!res.ok) throw new Error('GitHub diff fetch failed');
+  return res.text();
+}
+async function ghGetComments(repo, issueNumber) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`, { headers: ghHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'GitHub comments fetch failed');
+  return data;
+}
+async function ghGraphQL(query, variables) {
+  const res = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: ghHeaders(),
+    body: JSON.stringify({ query, variables }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.errors) throw new Error((data.errors && data.errors[0].message) || 'GitHub GraphQL request failed');
+  return data.data;
+}
+async function ghMergePR(repo, prNumber) {
+  // Auto-created PRs are opened as drafts (see the routine's own auto-PR
+  // setting) so the live-preview/diff review step has something concrete to
+  // show before anything is mergeable - GitHub refuses to merge a draft
+  // directly, so "Push to Commit" un-drafts it as part of the same action
+  // rather than making the human do a separate GitHub-side step first.
+  // NOTE: PATCH /pulls/{n} with draft:false looks like it works (200, no
+  // error) but silently no-ops - confirmed by testing. Un-drafting is only
+  // real via this GraphQL mutation, which needs the PR's node_id, not its
+  // number.
+  const prRes = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, { headers: ghHeaders() });
+  const prData = await prRes.json();
+  if (!prRes.ok) throw new Error(prData.message || 'Could not look up PR before merging');
+  if (prData.draft) {
+    await ghGraphQL(
+      'mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { isDraft } } }',
+      { id: prData.node_id }
+    );
+  }
+  const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}/merge`, {
+    method: 'PUT',
+    headers: ghHeaders(),
+    body: JSON.stringify({ merge_method: 'squash' }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'GitHub merge failed');
+  return data;
+}
+
+const DEVCONSOLE_LOG_FILE = path.join(BAT_DIR, 'devconsole-log.jsonl');
+function logDevConsoleEvent(record) {
+  try {
+    fs.appendFileSync(DEVCONSOLE_LOG_FILE, JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n');
+  } catch (e) { /* logging must never be why a dispatch fails */ }
+}
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try { resolve(JSON.parse(body || '{}')); }
+      catch (e) { reject(new Error('Invalid JSON body')); }
+    });
+  });
+}
+
 // ── HTTP SERVER ──────────────────────────────────────────────
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, x-qa-key',
+  'Access-Control-Allow-Headers': 'Content-Type, x-qa-key, x-devconsole-key',
 };
 
 const server = http.createServer((req, res) => {
@@ -1062,6 +1197,125 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
       }
     });
+    return;
+  }
+
+  // ── DEV CONSOLE ROUTES ──────────────────────────────────────
+  if (parsedUrl.pathname === '/api/devconsole/health' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ ok: true, githubConfigured: !!DEVCONSOLE_GITHUB_KEY }));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/devconsole/dispatch' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    (async () => {
+      try {
+        const { repo: repoKey, summary, transcript } = await readJsonBody(req);
+        const repo = DEVCONSOLE_REPOS[repoKey];
+        if (!repo) throw new Error(`Unknown repo target: ${repoKey}`);
+        if (!DEVCONSOLE_GITHUB_KEY) throw new Error('No GitHub key configured on the host (devconsole-github.key is missing)');
+        if (!transcript || !transcript.trim()) throw new Error('Empty transcript');
+        const title = (summary || transcript).slice(0, 120);
+        const body = `**Dispatched from the ArchViz Dev Console**\n\n${transcript}`;
+        const issue = await ghCreateIssue(repo, title, body);
+        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: issue.number, title, transcript });
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, issueNumber: issue.number, issueUrl: issue.html_url }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/devconsole/status' && req.method === 'GET') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    (async () => {
+      try {
+        const repoKey = parsedUrl.searchParams.get('repo');
+        const issueNumber = parsedUrl.searchParams.get('issue');
+        const repo = DEVCONSOLE_REPOS[repoKey];
+        if (!repo || !issueNumber) throw new Error('repo and issue are required');
+        const pr = await ghFindLinkedPR(repo, issueNumber);
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, pr: pr ? { number: pr.number, url: pr.html_url, state: pr.state, draft: pr.pull_request && pr.pull_request.draft } : null }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/devconsole/diff' && req.method === 'GET') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    (async () => {
+      try {
+        const repoKey = parsedUrl.searchParams.get('repo');
+        const prNumber = parsedUrl.searchParams.get('pr');
+        const repo = DEVCONSOLE_REPOS[repoKey];
+        if (!repo || !prNumber) throw new Error('repo and pr are required');
+        const diff = await ghGetDiff(repo, prNumber);
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', ...CORS_HEADERS });
+        res.end(diff);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
+    return;
+  }
+
+  // Security-check dispatches don't open a PR — the routine posts its
+  // findings as a comment on the issue instead (see the routine's own
+  // system prompt's [SECURITY-CODE]/[SECURITY-INFRA] handling). The console
+  // polls this instead of /status for those two dispatch types.
+  if (parsedUrl.pathname === '/api/devconsole/comments' && req.method === 'GET') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    (async () => {
+      try {
+        const repoKey = parsedUrl.searchParams.get('repo');
+        const issueNumber = parsedUrl.searchParams.get('issue');
+        const repo = DEVCONSOLE_REPOS[repoKey];
+        if (!repo || !issueNumber) throw new Error('repo and issue are required');
+        const comments = await ghGetComments(repo, issueNumber);
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, comments: comments.map(c => ({ body: c.body, createdAt: c.created_at, author: c.user && c.user.login })) }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/devconsole/commit' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    (async () => {
+      try {
+        const { repo: repoKey, pr: prNumber } = await readJsonBody(req);
+        const repo = DEVCONSOLE_REPOS[repoKey];
+        if (!repo || !prNumber) throw new Error('repo and pr are required');
+        const result = await ghMergePR(repo, prNumber);
+        logDevConsoleEvent({ type: 'commit', repo: repoKey, pr: prNumber, merged: result.merged });
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, merged: result.merged }));
+        if (repoKey === 'launcher') {
+          // Pull the merge locally and exit - listener_service.bat's retry
+          // loop relaunches this process fresh with the new code, same
+          // self-healing pattern already used everywhere else on the host.
+          exec('git pull', { cwd: BAT_DIR, timeout: EXEC_TIMEOUT_MS }, () => {
+            addLog('lobby', 'Dev Console: launcher repo updated, restarting to pick up the change.', 'info');
+            setTimeout(() => process.exit(0), 500);
+          });
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
     return;
   }
 
