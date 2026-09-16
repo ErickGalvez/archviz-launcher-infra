@@ -958,6 +958,17 @@ function isDevConsoleAuthed(req) {
   return req.headers['x-devconsole-key'] === DEVCONSOLE_KEY;
 }
 
+// 1-4 knob for how readily the agent stops to ask a ❓ QUESTION instead of
+// just proceeding (see the routine's own system prompt, which defines what
+// each level means to it). Chosen per-dispatch in the console, not fixed -
+// a quick copy tweak and a real data-flow change warrant very different
+// amounts of hand-holding.
+const DISAMBIGUATION_LABELS = { 1: 'Decide for me', 2: 'Minimal', 3: 'Balanced', 4: 'Thorough' };
+function disambiguationLine(level) {
+  const n = [1, 2, 3, 4].includes(level) ? level : 3;
+  return `Disambiguation level: ${n}/4 (${DISAMBIGUATION_LABELS[n]})`;
+}
+
 // GitHub token this relay uses to create issues / poll PRs / merge - a
 // fine-grained PAT scoped to Issues + Pull requests (read/write) on just
 // the repos below. Not auto-generated like the keys above: it has to come
@@ -1292,7 +1303,7 @@ const server = http.createServer((req, res) => {
     if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
     (async () => {
       try {
-        const { repo: repoKey, summary, transcript, category } = await readJsonBody(req);
+        const { repo: repoKey, summary, transcript, category, disambiguation } = await readJsonBody(req);
         const repo = DEVCONSOLE_REPOS[repoKey];
         if (!repo) throw new Error(`Unknown repo target: ${repoKey}`);
         if (!DEVCONSOLE_GITHUB_KEY) throw new Error('No GitHub key configured on the host (devconsole-github.key is missing)');
@@ -1306,9 +1317,9 @@ const server = http.createServer((req, res) => {
         const contextNote = category === 'functional'
           ? 'This is a FUNCTIONAL change (behavior/logic, not just visual). Be careful: consider edge cases, avoid breaking existing flows, and call out any behavior change or risk clearly in the PR description.\n\n'
           : '';
-        const body = `**Dispatched from the ArchViz Dev Console**\n\n${contextNote}${transcript}`;
+        const body = `**Dispatched from the ArchViz Dev Console**\n\n${disambiguationLine(disambiguation)}\n\n${contextNote}${transcript}`;
         const issue = await ghCreateIssue(repo, title, body);
-        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: issue.number, title, transcript, category: category || null });
+        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: issue.number, title, transcript, category: category || null, disambiguation: disambiguation || null });
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: true, issueNumber: issue.number, issueUrl: issue.html_url }));
       } catch (e) {
@@ -1393,7 +1404,7 @@ const server = http.createServer((req, res) => {
     if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
     (async () => {
       try {
-        const { repo: repoKey, issue: issueNumber, question, answer } = await readJsonBody(req);
+        const { repo: repoKey, issue: issueNumber, question, answer, disambiguation } = await readJsonBody(req);
         const repo = DEVCONSOLE_REPOS[repoKey];
         if (!repo || !issueNumber) throw new Error('repo and issue are required');
         if (!answer || !answer.trim()) throw new Error('Empty answer');
@@ -1401,6 +1412,8 @@ const server = http.createServer((req, res) => {
         const title = `Follow-up: ${original.title}`.slice(0, 120);
         const body = [
           '**Follow-up dispatched from the ArchViz Dev Console — this continues a previous request.**',
+          '',
+          disambiguationLine(disambiguation),
           '',
           `Original request:\n${original.body || ''}`,
           '',
@@ -1412,7 +1425,7 @@ const server = http.createServer((req, res) => {
         ].join('\n');
         const newIssue = await ghCreateIssue(repo, title, body);
         await ghCloseIssue(repo, issueNumber, `Answered — continuing as #${newIssue.number}.`);
-        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: newIssue.number, title, transcript: `[follow-up to #${issueNumber}] ${answer}` });
+        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: newIssue.number, title, transcript: `[follow-up to #${issueNumber}] ${answer}`, disambiguation: disambiguation || null });
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: true, issueNumber: newIssue.number, issueUrl: newIssue.html_url }));
       } catch (e) {
