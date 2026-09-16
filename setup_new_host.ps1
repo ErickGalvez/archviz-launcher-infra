@@ -127,24 +127,49 @@ Write-Host @"
      either copy the real values from the old machine, or generate a fresh
      Key ID + API Token in the Cloudflare dashboard (Realtime > TURN Keys).
 
-  3. Cloudflare Tunnel identity (secret, lives outside this repo entirely)
-     Copy these two files from the OLD machine's C:\Users\<user>\.cloudflared\
-     to the same location on this one:
-       - config.yml
-       - <tunnel-id>.json  (the credentials file config.yml points at)
-     This lets the SAME tunnel (and the same api.g-741studio.com /
-     stream.g-741studio.com DNS records) just start answering from this
-     machine instead - no Cloudflare dashboard changes needed.
-     (Alternative if you'd rather not copy tunnel secrets: run
-     `cloudflared tunnel login` + `cloudflared tunnel create` fresh here,
-     then update the DNS records to point at the new tunnel ID.)
+  3. Auth keys (secret, intentionally not in git) - COPY, DO NOT REGENERATE
+     admin.key, qa.key, devconsole.key, and devconsole-github.key must be
+     the EXACT SAME files on every host that can serve api.g-741studio.com
+     (see step 5 below on why more than one host now can). Each of these
+     auto-generates a fresh random value if missing, which is fine for a
+     single-host setup but breaks the QA dashboard / Dev Console / admin
+     panel the moment a request happens to land on a host with a
+     different key than the one the browser has. Copy the four files from
+     the other host into this folder - do NOT let this script or a first
+     run generate new ones.
 
-  4. Frontend overlay drop-in
+  4. Is this a second/standby host, or brand new?
+     If archviz-launcher-infra is already running somewhere and this is
+     an ADDITIONAL host (not a full replacement), stop and read the
+     "Two hosts, one site" section of INSTALL.md before continuing - it
+     covers the Cloudflare Worker failover setup that lets a primary and
+     standby host coexist safely (never run the SAME Cloudflare Tunnel
+     identity on two machines at once - see cloudflare_worker_fallback.js
+     for exactly why). If this is a straight one-for-one replacement of
+     the only host, skip that and continue below as before.
+
+  5. Cloudflare Tunnel identity (secret, lives outside this repo entirely)
+     - Single-host replacement: copy these two files from the OLD
+       machine's C:\Users\<user>\.cloudflared\ to the same location here:
+         config.yml
+         <tunnel-id>.json  (the credentials file config.yml points at)
+       This lets the SAME tunnel (and the same api.g-741studio.com /
+       stream.g-741studio.com DNS records) just start answering from
+       this machine instead - no Cloudflare dashboard changes needed.
+     - Second/standby host (see step 4): give THIS host its OWN tunnel
+       instead - `cloudflared tunnel login` + `cloudflared tunnel create
+       <name>` here, then `cloudflared tunnel route dns <name>
+       <role>-internal.g-741studio.com` (role = nh or oh, whichever this
+       machine is). Do not point it at the public hostnames directly -
+       those now route through the Worker, which is what decides which
+       internal hostname gets real traffic.
+
+  6. Frontend overlay drop-in
      Wilbur builds its own www/ folder the first time start.bat runs
      (via SetupFrontend). AFTER that first run, copy archviz-ui.js from
      $overlayDir into <SIGNAL_DIR>\www\archviz-ui.js.
 
-  5. common.bat patch (Epic's vendor file, lives inside the Engine install
+  7. common.bat patch (Epic's vendor file, lives inside the Engine install
      - a fresh UE5 5.7 install gets Epic's stock version with NEITHER of
      our two fixes, and there's no git-clone path that carries this one
      over automatically)
@@ -159,7 +184,7 @@ Write-Host @"
 # ---------------------------------------------------------------
 Section "Persistent background tasks (listener + tunnel)"
 
-$doTasks = Read-Host "Register the Scheduled Tasks now, so the listener and tunnel auto-start at logon? (y/n)"
+$doTasks = Read-Host "Register the Scheduled Tasks now, so the listener, tunnel, and repo sync auto-start at logon? (y/n)"
 if ($doTasks -eq 'y') {
     $action1 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$root\run_hidden.vbs`" `"$root\listener_service.bat`""
     $action2 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$root\run_hidden.vbs`" `"$root\tunnel_service.bat`""
@@ -168,7 +193,16 @@ if ($doTasks -eq 'y') {
 
     Register-ScheduledTask -TaskName "ArchViz-Listener" -Action $action1 -Trigger $trigger -Settings $settings -Description "Always-on lightweight backend for the ArchViz landing page." -Force | Out-Null
     Register-ScheduledTask -TaskName "ArchViz-Tunnel" -Action $action2 -Trigger $trigger -Settings $settings -Description "Cloudflare tunnel for the ArchViz listener." -Force | Out-Null
-    Ok "Scheduled Tasks registered (ArchViz-Listener, ArchViz-Tunnel). They'll start at your next logon - run 'Start-ScheduledTask -TaskName ArchViz-Listener' (and -Tunnel) to start them right now instead of waiting."
+
+    # Keeps this host's code current with origin/main on a timer, independent
+    # of whether a Dev Console push happened to be dispatched while THIS
+    # host was the one answering requests - see sync_repo.ps1.
+    $syncAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$root\sync_repo.ps1`""
+    $syncTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 3650)
+    $syncSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName "ArchViz-Sync" -Action $syncAction -Trigger $syncTrigger -Settings $syncSettings -Description "Keeps this host's archviz-launcher-infra checkout current with origin/main; restarts launcher-server.js if it changes." -Force | Out-Null
+
+    Ok "Scheduled Tasks registered (ArchViz-Listener, ArchViz-Tunnel, ArchViz-Sync). The first two start at your next logon; run 'Start-ScheduledTask -TaskName ArchViz-Listener' (and -Tunnel, -Sync) to start them right now instead of waiting."
 } else {
     Info "Skipped. Register later by re-running this script, or manually via Task Scheduler."
 }

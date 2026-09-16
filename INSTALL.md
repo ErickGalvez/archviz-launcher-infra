@@ -68,3 +68,35 @@ When the script finishes, it prints a numbered list. Do these two now:
    - It should say "Host Online"
 
 **If Step 8 doesn't work, stop and message Erick. Don't guess.**
+
+---
+
+## Running two hosts at once (a backup machine)
+
+Skip this whole section if you're just replacing the only computer that runs ArchViz - Steps 1-8 above are all you need, and you're done.
+
+Read this if the OLD computer is going to keep running too, as a backup, once the new one is set up. The idea: normally the new (faster/more reliable) computer serves everyone, but if it's turned off or something's wrong with it, the old one keeps the site working instead of it just going down. This needs a few things set up slightly differently so the two computers don't fight over the same visitors or the same login keys.
+
+### The code stays in sync automatically
+
+Both computers now check GitHub every 3 minutes and pull down anything new, restarting the background service automatically if there's an update (this is what Step 5's setup script registers as "ArchViz-Sync"). You never need to manually copy files between the two computers - every change (including ones pushed through the Dev Console) reaches both within a few minutes on its own. **Never hand-edit files directly on either computer** - always go through git (a normal push) or the Dev Console, or the next sync will have nothing to compare against and could get confused.
+
+### The four secret key files must be identical on both computers
+
+`admin.key`, `qa.key`, `devconsole.key`, and `devconsole-github.key` each get invented automatically the first time the server starts if they're missing - that's fine for one computer, but breaks things the moment a visitor's request happens to land on the *other* computer, since it would have invented different keys. **Copy these four files from the computer that's already running onto the new one before starting it the first time.** Do not let the new computer generate its own.
+
+### Each computer needs its own Cloudflare Tunnel identity (not a shared one)
+
+This is different from a straight replacement (Step 6.2 above, which intentionally moves the SAME tunnel to the new computer). For a backup setup, each computer gets its OWN tunnel instead, each with its own private internal address:
+- `nh-internal.g-741studio.com` → the new/main computer
+- `oh-internal.g-741studio.com` → the old/backup computer
+
+The public addresses everyone actually uses (`api.g-741studio.com`, `stream.g-741studio.com`) don't point at either tunnel directly anymore - they point at a small Cloudflare Worker (`cloudflare_worker_fallback.js` in this folder) that tries the main computer first and only falls back to the backup one if the main one doesn't answer. This has to be set up once in the Cloudflare dashboard - see the instructions at the top of `cloudflare_worker_fallback.js` for the exact steps, or ask Erick to do this part.
+
+One nice side effect: you can always check a computer directly by visiting its own internal address (e.g. `https://nh-internal.g-741studio.com/api/status`) - useful for testing a freshly set up computer before it's ever handling real visitors, completely separately from whatever's currently live on the public site.
+
+### Day to day
+
+- If both computers are on, the main one (NH) serves everyone. The backup does nothing but stay ready and stay in sync.
+- If the main one is off or crashed, the backup starts serving automatically within seconds - nobody needs to flip a switch.
+- Never run the actual pixel-streaming presentation (`launch_pixelstream.bat`) on both computers for the same visitor session - only one computer should ever be actively streaming to the public at a time. The failover above only decides which computer *answers requests*; starting a live session is still something a person does deliberately on whichever computer should be presenting.
