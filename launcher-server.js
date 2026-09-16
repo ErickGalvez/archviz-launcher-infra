@@ -1013,6 +1013,33 @@ async function ghGetComments(repo, issueNumber) {
   if (!res.ok) throw new Error(data.message || 'GitHub comments fetch failed');
   return data;
 }
+async function ghGetIssue(repo, issueNumber) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}`, { headers: ghHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'GitHub issue fetch failed');
+  return data;
+}
+async function ghCloseIssue(repo, issueNumber, comment) {
+  if (comment) {
+    await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`, {
+      method: 'POST', headers: ghHeaders(), body: JSON.stringify({ body: comment }),
+    });
+  }
+  await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}`, {
+    method: 'PATCH', headers: ghHeaders(), body: JSON.stringify({ state: 'closed' }),
+  });
+}
+// Finds the routine's own "❓ QUESTION:" comment, if it asked one instead
+// of opening a PR (see the routine's own system prompt) - only meaningful
+// while no PR exists yet, since a real PR means it went ahead and answered
+// its own ambiguity charitably.
+async function ghFindQuestion(repo, issueNumber) {
+  const comments = await ghGetComments(repo, issueNumber);
+  for (let i = comments.length - 1; i >= 0; i--) {
+    if (/QUESTION:/i.test(comments[i].body || '')) return comments[i].body;
+  }
+  return null;
+}
 async function ghGraphQL(query, variables) {
   const res = await fetch('https://api.github.com/graphql', {
     method: 'POST',
@@ -1050,6 +1077,28 @@ async function ghMergePR(repo, prNumber) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.message || 'GitHub merge failed');
   return data;
+}
+async function ghGetPR(repo, prNumber) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, { headers: ghHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'GitHub PR fetch failed');
+  return data;
+}
+// Reverts an already-merged PR by opening a fresh PR that undoes it, via the
+// same GraphQL mutation GitHub's own "Revert" button uses (no equivalent in
+// the plain REST API). Opened as a draft like every other auto-created PR
+// here, so it goes through the same review-diff-then-push path as anything
+// else - Undo is "prepare a revert for review," not "push straight to main."
+async function ghRevertPR(repo, prNumber) {
+  const pr = await ghGetPR(repo, prNumber);
+  if (!pr.merged) throw new Error('That PR was never merged - nothing to revert');
+  const result = await ghGraphQL(
+    'mutation($id:ID!,$title:String!,$body:String){ revertPullRequest(input:{pullRequestId:$id, title:$title, body:$body, draft:true}) { revertPullRequest { number url } } }',
+    { id: pr.node_id, title: `Revert "${pr.title}"`, body: `This reverts PR #${prNumber} via the Dev Console's Undo button.\n\nOriginal PR: ${pr.html_url}` }
+  );
+  const revertPR = result.revertPullRequest && result.revertPullRequest.revertPullRequest;
+  if (!revertPR) throw new Error('GitHub did not return a revert PR - it may not be revertible (conflicts with later changes)');
+  return revertPR;
 }
 
 const DEVCONSOLE_LOG_FILE = path.join(BAT_DIR, 'devconsole-log.jsonl');
@@ -1243,15 +1292,23 @@ const server = http.createServer((req, res) => {
     if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
     (async () => {
       try {
-        const { repo: repoKey, summary, transcript } = await readJsonBody(req);
+        const { repo: repoKey, summary, transcript, category } = await readJsonBody(req);
         const repo = DEVCONSOLE_REPOS[repoKey];
         if (!repo) throw new Error(`Unknown repo target: ${repoKey}`);
         if (!DEVCONSOLE_GITHUB_KEY) throw new Error('No GitHub key configured on the host (devconsole-github.key is missing)');
         if (!transcript || !transcript.trim()) throw new Error('Empty transcript');
         const title = (summary || transcript).slice(0, 120);
-        const body = `**Dispatched from the ArchViz Dev Console**\n\n${transcript}`;
+        // Functional changes carry real behavioral risk that cosmetic ones
+        // don't (a bad color choice is a one-click undo; a broken lobby-queue
+        // edge case can strand a real visitor) - this extra context asks the
+        // agent to actually think about that instead of treating every
+        // dispatch the same way.
+        const contextNote = category === 'functional'
+          ? 'This is a FUNCTIONAL change (behavior/logic, not just visual). Be careful: consider edge cases, avoid breaking existing flows, and call out any behavior change or risk clearly in the PR description.\n\n'
+          : '';
+        const body = `**Dispatched from the ArchViz Dev Console**\n\n${contextNote}${transcript}`;
         const issue = await ghCreateIssue(repo, title, body);
-        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: issue.number, title, transcript });
+        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: issue.number, title, transcript, category: category || null });
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: true, issueNumber: issue.number, issueUrl: issue.html_url }));
       } catch (e) {
@@ -1271,8 +1328,9 @@ const server = http.createServer((req, res) => {
         const repo = DEVCONSOLE_REPOS[repoKey];
         if (!repo || !issueNumber) throw new Error('repo and issue are required');
         const pr = await ghFindLinkedPR(repo, issueNumber);
+        const question = pr ? null : await ghFindQuestion(repo, issueNumber);
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: true, pr: pr ? { number: pr.number, url: pr.html_url, state: pr.state, draft: pr.pull_request && pr.pull_request.draft } : null }));
+        res.end(JSON.stringify({ ok: true, pr: pr ? { number: pr.number, url: pr.html_url, state: pr.state, draft: pr.pull_request && pr.pull_request.draft } : null, question }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: false, error: e.message }));
@@ -1323,15 +1381,57 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Answering a ❓ QUESTION comment doesn't reply on the same thread - the
+  // webhook trigger only fires on a new issue being opened, and the agent's
+  // own comments/PRs post under the same GitHub identity as a human would,
+  // so there's no reliable way to tell "the agent's question" apart from "a
+  // human's answer" on an issue_comment event without real loop risk.
+  // Bundling the original request + question + answer into a fresh issue
+  // reuses the exact dispatch path already proven to work, with none of that
+  // risk - it just closes the old issue pointing at the new one.
+  if (parsedUrl.pathname === '/api/devconsole/answer' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    (async () => {
+      try {
+        const { repo: repoKey, issue: issueNumber, question, answer } = await readJsonBody(req);
+        const repo = DEVCONSOLE_REPOS[repoKey];
+        if (!repo || !issueNumber) throw new Error('repo and issue are required');
+        if (!answer || !answer.trim()) throw new Error('Empty answer');
+        const original = await ghGetIssue(repo, issueNumber);
+        const title = `Follow-up: ${original.title}`.slice(0, 120);
+        const body = [
+          '**Follow-up dispatched from the ArchViz Dev Console — this continues a previous request.**',
+          '',
+          `Original request:\n${original.body || ''}`,
+          '',
+          `Claude asked:\n${question || '(see #' + issueNumber + ')'}`,
+          '',
+          `Human's answer:\n${answer}`,
+          '',
+          'Please proceed with the original request using this clarification.',
+        ].join('\n');
+        const newIssue = await ghCreateIssue(repo, title, body);
+        await ghCloseIssue(repo, issueNumber, `Answered — continuing as #${newIssue.number}.`);
+        logDevConsoleEvent({ type: 'dispatch', repo: repoKey, issueNumber: newIssue.number, title, transcript: `[follow-up to #${issueNumber}] ${answer}` });
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, issueNumber: newIssue.number, issueUrl: newIssue.html_url }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/devconsole/commit' && req.method === 'POST') {
     if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
     (async () => {
       try {
-        const { repo: repoKey, pr: prNumber } = await readJsonBody(req);
+        const { repo: repoKey, pr: prNumber, category } = await readJsonBody(req);
         const repo = DEVCONSOLE_REPOS[repoKey];
         if (!repo || !prNumber) throw new Error('repo and pr are required');
         const result = await ghMergePR(repo, prNumber);
-        logDevConsoleEvent({ type: 'commit', repo: repoKey, pr: prNumber, merged: result.merged });
+        logDevConsoleEvent({ type: 'commit', repo: repoKey, pr: prNumber, merged: result.merged, category: category || null });
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: true, merged: result.merged }));
         if (repoKey === 'launcher') {
@@ -1343,6 +1443,28 @@ const server = http.createServer((req, res) => {
             setTimeout(() => process.exit(0), 500);
           });
         }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
+    return;
+  }
+
+  // Prepares a revert of an already-merged PR (as a fresh draft PR) so it can
+  // go through the exact same review-diff-then-push path as any other
+  // change - Undo never pushes straight to main. See ghRevertPR().
+  if (parsedUrl.pathname === '/api/devconsole/undo' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    (async () => {
+      try {
+        const { repo: repoKey, pr: prNumber } = await readJsonBody(req);
+        const repo = DEVCONSOLE_REPOS[repoKey];
+        if (!repo || !prNumber) throw new Error('repo and pr are required');
+        const revertPR = await ghRevertPR(repo, prNumber);
+        logDevConsoleEvent({ type: 'undo', repo: repoKey, originalPr: prNumber, pr: revertPR.number });
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, pr: { number: revertPR.number, url: revertPR.url, state: 'open' } }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: false, error: e.message }));
