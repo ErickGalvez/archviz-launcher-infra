@@ -1207,6 +1207,38 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Reads devconsole-log.jsonl (every dispatch/commit this relay has ever
+  // made) and hands back the most recent entries, newest first, each
+  // annotated with a real GitHub URL so the console can render a clickable
+  // history without the client needing to know repo mappings itself.
+  if (parsedUrl.pathname === '/api/devconsole/history' && req.method === 'GET') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    try {
+      const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit'), 10) || 50, 200);
+      let lines = [];
+      if (fs.existsSync(DEVCONSOLE_LOG_FILE)) {
+        lines = fs.readFileSync(DEVCONSOLE_LOG_FILE, 'utf8').split('\n').filter(Boolean);
+      }
+      const events = lines.slice(-limit).reverse().map(line => {
+        let record;
+        try { record = JSON.parse(line); } catch (e) { return null; }
+        const repo = DEVCONSOLE_REPOS[record.repo];
+        if (record.type === 'dispatch' && repo && record.issueNumber) {
+          record.url = `https://github.com/${repo}/issues/${record.issueNumber}`;
+        } else if (record.type === 'commit' && repo && record.pr) {
+          record.url = `https://github.com/${repo}/pull/${record.pr}`;
+        }
+        return record;
+      }).filter(Boolean);
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: true, events }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/devconsole/dispatch' && req.method === 'POST') {
     if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
     (async () => {
