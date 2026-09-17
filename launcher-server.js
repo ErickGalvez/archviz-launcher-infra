@@ -1095,6 +1095,18 @@ async function ghGetPR(repo, prNumber) {
   if (!res.ok) throw new Error(data.message || 'GitHub PR fetch failed');
   return data;
 }
+// GitHub itself is the durable, host-independent record of every real merge -
+// devconsole-log.jsonl is a local, gitignored file that only exists on
+// whichever host wrote it, so a brand-new or replacement host (see the
+// primary/backup host setup) starts with none of it. This lets /history
+// backfill from GitHub directly so the most recent real commits are never
+// lost just because a different host happens to be answering right now.
+async function ghListRecentMerges(repo, limit) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${Math.min(Math.max(limit, 10), 50)}`, { headers: ghHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'GitHub PR list fetch failed');
+  return data.filter(pr => pr.merged_at);
+}
 // Reverts an already-merged PR by opening a fresh PR that undoes it, via the
 // same GraphQL mutation GitHub's own "Revert" button uses (no equivalent in
 // the plain REST API). Opened as a draft like every other auto-created PR
@@ -1273,29 +1285,54 @@ const server = http.createServer((req, res) => {
   // history without the client needing to know repo mappings itself.
   if (parsedUrl.pathname === '/api/devconsole/history' && req.method === 'GET') {
     if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
-    try {
-      const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit'), 10) || 50, 200);
-      let lines = [];
-      if (fs.existsSync(DEVCONSOLE_LOG_FILE)) {
-        lines = fs.readFileSync(DEVCONSOLE_LOG_FILE, 'utf8').split('\n').filter(Boolean);
-      }
-      const events = lines.slice(-limit).reverse().map(line => {
-        let record;
-        try { record = JSON.parse(line); } catch (e) { return null; }
-        const repo = DEVCONSOLE_REPOS[record.repo];
-        if (record.type === 'dispatch' && repo && record.issueNumber) {
-          record.url = `https://github.com/${repo}/issues/${record.issueNumber}`;
-        } else if (record.type === 'commit' && repo && record.pr) {
-          record.url = `https://github.com/${repo}/pull/${record.pr}`;
+    (async () => {
+      try {
+        const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit'), 10) || 50, 200);
+        let lines = [];
+        if (fs.existsSync(DEVCONSOLE_LOG_FILE)) {
+          lines = fs.readFileSync(DEVCONSOLE_LOG_FILE, 'utf8').split('\n').filter(Boolean);
         }
-        return record;
-      }).filter(Boolean);
-      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-      res.end(JSON.stringify({ ok: true, events }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-      res.end(JSON.stringify({ ok: false, error: e.message }));
-    }
+        const localEvents = lines.slice(-limit).reverse().map(line => {
+          let record;
+          try { record = JSON.parse(line); } catch (e) { return null; }
+          const repo = DEVCONSOLE_REPOS[record.repo];
+          if (record.type === 'dispatch' && repo && record.issueNumber) {
+            record.url = `https://github.com/${repo}/issues/${record.issueNumber}`;
+          } else if (record.type === 'commit' && repo && record.pr) {
+            record.url = `https://github.com/${repo}/pull/${record.pr}`;
+          }
+          return record;
+        }).filter(Boolean);
+
+        // Backfill real merges GitHub knows about that the local log
+        // doesn't - a fresh host, a cleared log, or one that simply predates
+        // a given merge would otherwise make that commit vanish from
+        // history entirely rather than just lose its extra local detail
+        // (category, the original dispatch transcript).
+        const knownPRs = new Set(localEvents.filter(e => e.type === 'commit').map(e => `${e.repo}:${e.pr}`));
+        const backfilled = [];
+        for (const [repoKey, repo] of Object.entries(DEVCONSOLE_REPOS)) {
+          try {
+            const merges = await ghListRecentMerges(repo, 10);
+            merges.forEach(pr => {
+              const key = `${repoKey}:${pr.number}`;
+              if (knownPRs.has(key)) return;
+              backfilled.push({ type: 'commit', repo: repoKey, pr: pr.number, merged: true, ts: pr.merged_at, url: pr.html_url, title: pr.title, category: null, source: 'github' });
+            });
+          } catch (e) { /* one repo's fetch failing shouldn't blank the whole history */ }
+        }
+
+        const events = localEvents.concat(backfilled)
+          .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+          .slice(0, limit);
+
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, events }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    })();
     return;
   }
 
