@@ -1404,13 +1404,37 @@ const server = http.createServer((req, res) => {
     if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
     (async () => {
       try {
-        const { repo: repoKey, issue: issueNumber, question, answer, disambiguation } = await readJsonBody(req);
+        const { repo: repoKey, issue: issueNumber, question, answer, disambiguation, originalTranscript, priorQA } = await readJsonBody(req);
         const repo = DEVCONSOLE_REPOS[repoKey];
         if (!repo || !issueNumber) throw new Error('repo and issue are required');
         if (!answer || !answer.trim()) throw new Error('Empty answer');
         const original = await ghGetIssue(repo, issueNumber);
         const title = `Follow-up: ${original.title}`.slice(0, 120);
-        const body = [
+        // originalTranscript + priorQA (threaded through the console's own
+        // chat state across every round) are strongly preferred over
+        // original.body: if this issue is ITSELF already a prior follow-up,
+        // its body already contains a full "Original request / Claude
+        // asked / Human's answer" block - re-embedding that wholesale on a
+        // second or third round would nest and grow with every round
+        // instead of staying flat. Listing every round's Q&A explicitly
+        // (rather than only the latest one) keeps deeper disambiguation
+        // chains from losing context an earlier round already settled.
+        // original.body is only a fallback for a resumed session that lost
+        // this client-side state (e.g. an old tab that never got the field).
+        const rounds = (Array.isArray(priorQA) ? priorQA : []).concat([{ question: question || '(unspecified)', answer }]);
+        const qaText = rounds.map((r, i) => `${i + 1}. Q: ${r.question}\n   A: ${r.answer}`).join('\n');
+        const body = originalTranscript ? [
+          '**Follow-up dispatched from the ArchViz Dev Console — this continues a previous request.**',
+          '',
+          disambiguationLine(disambiguation),
+          '',
+          `Original request:\n${originalTranscript}`,
+          '',
+          'Clarification so far:',
+          qaText,
+          '',
+          'Please proceed with the original request using all of this context.',
+        ].join('\n') : [
           '**Follow-up dispatched from the ArchViz Dev Console — this continues a previous request.**',
           '',
           disambiguationLine(disambiguation),
