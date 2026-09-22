@@ -683,7 +683,8 @@ function lobbyStatusFor(id) {
   };
 }
 
-function joinLobby(name, ip, userAgent) {
+function joinLobby(lead, ip, userAgent) {
+  const name = (lead.name || '').slice(0, 80);
   if (sessionMode === 'free') {
     return { ok: true, free: true, psStatus: lastPSStatus, message: 'Open session — no queue, connect directly.' };
   }
@@ -698,10 +699,35 @@ function joinLobby(name, ip, userAgent) {
   lastJoinByIP.set(ip, now);
   const id = genTicketId();
   const device = parseUserAgent(userAgent);
-  lobbyQueue.push({ id, name: (name || '').slice(0, 80), joinedAt: now, userAgent, device });
+  lobbyQueue.push({ id, name, joinedAt: now, userAgent, device });
   addLog('lobby', `${name || 'A visitor'} joined the queue (position ${lobbyQueue.length})`, 'info');
+  logLead(lead, device);
   if (!currentTurn) advanceQueue();
   return { ok: true, id };
+}
+
+// Every real "Request Session" submission, captured at request time (not
+// just at session-conclusion like session-log.jsonl already does) - this is
+// the actual lead list: who asked, what they wanted to see, and whether
+// their email came from a Google-verified sign-in or was just typed in.
+// Google's own picture URL is used as-is elsewhere (nav avatar) - nothing
+// here downloads or re-hosts it, so there's no image storage to maintain.
+const LEADS_LOG_FILE = path.join(BAT_DIR, 'leads-log.jsonl');
+function logLead(lead, device) {
+  const name = (lead.name || '').slice(0, 80);
+  const email = (lead.email || '').slice(0, 200);
+  if (!name && !email) return; // nothing worth recording - both fields are optional
+  try {
+    fs.appendFileSync(LEADS_LOG_FILE, JSON.stringify({
+      ts: new Date().toISOString(),
+      name, email,
+      emailVerified: !!(lead.google && lead.google.verified),
+      googleSub: (lead.google && lead.google.sub) || null,
+      company: (lead.company || '').slice(0, 200),
+      message: (lead.message || '').slice(0, 1000),
+      device,
+    }) + '\n');
+  } catch (e) { /* logging must never be why a join fails */ }
 }
 
 function leaveLobby(id) {
@@ -1588,10 +1614,10 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', d => body += d);
     req.on('end', () => {
-      let name = '';
-      try { name = JSON.parse(body || '{}').name || ''; } catch (e) {}
+      let lead = {};
+      try { lead = JSON.parse(body || '{}'); } catch (e) {}
       const ip = req.socket.remoteAddress || 'unknown';
-      const result = joinLobby(name, ip, req.headers['user-agent']);
+      const result = joinLobby(lead, ip, req.headers['user-agent']);
       res.writeHead(result.ok ? 200 : 429, { 'Content-Type': 'application/json', ...CORS_HEADERS });
       res.end(JSON.stringify(result));
     });

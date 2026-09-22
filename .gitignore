@@ -22,6 +22,7 @@ rename
 *.log
 session-log.jsonl
 devconsole-log.jsonl
+leads-log.jsonl
 
 # Local dev-server config (machine-specific absolute paths)
 .claude/
