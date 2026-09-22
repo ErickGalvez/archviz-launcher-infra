@@ -640,7 +640,16 @@ function advanceQueue() {
     return;
   }
   const next = lobbyQueue.shift();
-  currentTurn = { id: next.id, name: next.name, status: 'confirming', deadline: Date.now() + CONFIRM_GRACE_MS, userAgent: next.userAgent, device: next.device };
+  currentTurn = { id: next.id, name: next.name, status: 'confirming', deadline: Date.now() + CONFIRM_GRACE_MS, userAgent: next.userAgent, device: next.device, deviceId: next.deviceId };
+  // The confirm-tap grace period exists to protect the NEXT person in line
+  // from losing real wait time to someone who bailed right after joining.
+  // With nobody behind them, there's no one for a wasted launch to cost -
+  // skip straight to launching instead of making a solo visitor tap
+  // "confirm" for a queue that, for them, doesn't actually exist.
+  if (lobbyQueue.length === 0) {
+    startTurn(next.id, next.name);
+    return;
+  }
   addLog('lobby', `Ticket up for ${next.name || 'a visitor'} — waiting to confirm (30s)`, 'info');
   turnTimer = setTimeout(() => {
     addLog('lobby', `${currentTurn.name || 'Visitor'} didn't confirm in time, skipping`, 'info');
@@ -685,8 +694,24 @@ function lobbyStatusFor(id) {
 
 function joinLobby(lead, ip, userAgent) {
   const name = (lead.name || '').slice(0, 80);
+  const deviceId = (lead.deviceId || '').slice(0, 100);
   if (sessionMode === 'free') {
     return { ok: true, free: true, psStatus: lastPSStatus, message: 'Open session — no queue, connect directly.' };
+  }
+  // Same device, still holding a ticket (queued, confirming, or already
+  // active) - hand back that ticket instead of creating a second one. This
+  // is purely about accidental self-duplication (a double-click, two tabs,
+  // a refresh-resubmit) putting one visitor in line behind themselves, not
+  // a lifetime cap - once a device's turn actually concludes, its ticket is
+  // gone from both of these and a later join creates a normal new one.
+  if (deviceId) {
+    if (currentTurn && currentTurn.deviceId === deviceId) {
+      return { ok: true, id: currentTurn.id, resumed: true };
+    }
+    const existing = lobbyQueue.find(t => t.deviceId === deviceId);
+    if (existing) {
+      return { ok: true, id: existing.id, resumed: true };
+    }
   }
   const now = Date.now();
   const lastJoin = lastJoinByIP.get(ip) || 0;
@@ -699,7 +724,7 @@ function joinLobby(lead, ip, userAgent) {
   lastJoinByIP.set(ip, now);
   const id = genTicketId();
   const device = parseUserAgent(userAgent);
-  lobbyQueue.push({ id, name, joinedAt: now, userAgent, device });
+  lobbyQueue.push({ id, name, joinedAt: now, userAgent, device, deviceId });
   addLog('lobby', `${name || 'A visitor'} joined the queue (position ${lobbyQueue.length})`, 'info');
   logLead(lead, device);
   if (!currentTurn) advanceQueue();
@@ -736,11 +761,11 @@ function leaveLobby(id) {
   return { ok: lobbyQueue.length !== before };
 }
 
-function confirmTurn(id) {
-  if (sessionMode === 'free') return { ok: false, error: 'Free mode has no turn queue to confirm.' };
-  if (!currentTurn || currentTurn.id !== id || currentTurn.status !== 'confirming') {
-    return { ok: false, error: 'Not your turn, or it already expired' };
-  }
+// Shared by confirmTurn() (the manual "Sigo aquí" tap, used whenever there's
+// real contention to protect) and advanceQueue()'s solo fast-path (nothing
+// to protect when nobody else is waiting) - everything past "this ticket is
+// allowed to launch now" is identical either way.
+function startTurn(id, name) {
   clearTurnTimer();
   currentTurn.status = 'active';
   currentTurn.deadline = null; // clear the leftover 30s confirm-grace deadline from advanceQueue()
@@ -750,11 +775,19 @@ function confirmTurn(id) {
   // charging that against the visitor's session, or leaving their "turn"
   // occupying the queue for the full 15 minutes on a launch that never came
   // up, both wasted real queue time for the next person for no reason.
-  const confirmedName = currentTurn.name || 'Visitor';
+  const confirmedName = name || 'Visitor';
   addLog('lobby', `${confirmedName} confirmed — launching…`, 'ok');
   resetRoom();
   launchPS();
   watchLaunchOutcome(id, confirmedName);
+}
+
+function confirmTurn(id) {
+  if (sessionMode === 'free') return { ok: false, error: 'Free mode has no turn queue to confirm.' };
+  if (!currentTurn || currentTurn.id !== id || currentTurn.status !== 'confirming') {
+    return { ok: false, error: 'Not your turn, or it already expired' };
+  }
+  startTurn(id, currentTurn.name);
   return { ok: true };
 }
 
