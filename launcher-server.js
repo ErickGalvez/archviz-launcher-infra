@@ -755,6 +755,28 @@ function logLead(lead, device) {
   } catch (e) { /* logging must never be why a join fails */ }
 }
 
+// The hero "Let's talk" bar - a much lower-friction inquiry than the full
+// Request Session form (no name/email, just a one-line "I want this for my
+// business" type message). Deliberately its own log and its own tiny
+// route, NOT routed through joinLobby()/logLead() - an inquiry here must
+// never create a queue ticket or consume a turn, it's a business lead, not
+// a demo request.
+const INQUIRIES_LOG_FILE = path.join(BAT_DIR, 'inquiries-log.jsonl');
+function logInquiry(message, ip, device) {
+  const clean = (message || '').trim().slice(0, 500);
+  if (!clean) return false;
+  try {
+    fs.appendFileSync(INQUIRIES_LOG_FILE, JSON.stringify({
+      ts: new Date().toISOString(),
+      message: clean,
+      ip, device,
+    }) + '\n');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function leaveLobby(id) {
   const before = lobbyQueue.length;
   lobbyQueue = lobbyQueue.filter(t => t.id !== id);
@@ -1653,6 +1675,21 @@ const server = http.createServer((req, res) => {
       const result = joinLobby(lead, ip, req.headers['user-agent']);
       res.writeHead(result.ok ? 200 : 429, { 'Content-Type': 'application/json', ...CORS_HEADERS });
       res.end(JSON.stringify(result));
+    });
+    return;
+  }
+
+  if (url === '/api/inquiry' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      let data = {};
+      try { data = JSON.parse(body || '{}'); } catch (e) {}
+      const ip = req.socket.remoteAddress || 'unknown';
+      const device = parseUserAgent(req.headers['user-agent']);
+      const ok = logInquiry(data.message, ip, device);
+      res.writeHead(ok ? 200 : 400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok }));
     });
     return;
   }
