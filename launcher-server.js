@@ -1039,6 +1039,50 @@ function isDevConsoleAuthed(req) {
   return req.headers['x-devconsole-key'] === DEVCONSOLE_KEY;
 }
 
+// ── SALES / PROSPECTS — pilot-outreach CRM ──────────────────────
+// Tracks the CDMX pilot-outreach list (name, site, location, decision
+// maker, status, call schedule) so it lives in one place instead of a
+// scattered notes file. This is exactly as sensitive as the rest of the
+// devconsole data (prospect names/contacts, not public), so it's gated by
+// the same DEVCONSOLE_KEY rather than minting a fourth secret — reads
+// included, unlike the QA cases below, which are non-sensitive test docs.
+const SALES_DATA_FILE = path.join(BAT_DIR, 'sales-data.json');
+let prospects = [];
+function loadSalesData() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SALES_DATA_FILE, 'utf8'));
+    prospects = Array.isArray(parsed.prospects) ? parsed.prospects : [];
+  } catch (e) {
+    prospects = [];
+  }
+}
+function saveSalesData() {
+  try {
+    fs.writeFileSync(SALES_DATA_FILE, JSON.stringify({ prospects }, null, 2));
+  } catch (e) { /* saving must never crash a request */ }
+}
+loadSalesData();
+function newProspect(input) {
+  const now = new Date().toISOString();
+  return {
+    id: 'p_' + crypto.randomBytes(6).toString('hex'),
+    name: String((input && input.name) || '').trim(),
+    site: String((input && input.site) || '').trim(),
+    location: String((input && input.location) || '').trim(),
+    contact: String((input && input.contact) || '').trim(),
+    decisionMaker: String((input && input.decisionMaker) || '').trim(),
+    source: String((input && input.source) || 'Instagram ad').trim(),
+    status: 'new',
+    called: false,
+    calledAt: null,
+    scheduledCall: null,
+    demoBuilt: false,
+    notes: String((input && input.notes) || '').trim(),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 // 1-4 knob for how readily the agent stops to ask a ❓ QUESTION instead of
 // just proceeding (see the routine's own system prompt, which defines what
 // each level means to it). Chosen per-dispatch in the console, not fixed -
@@ -1625,6 +1669,153 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
     })();
+    return;
+  }
+
+  // ── SALES / PROSPECTS API — devconsole-key gated, reads included ──
+  if (parsedUrl.pathname === '/api/sales/prospects' && req.method === 'GET') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ prospects }));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/sales/prospects/create' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const prospect = newProspect(JSON.parse(body || '{}'));
+        prospects.push(prospect);
+        saveSalesData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, prospect }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  // One prospect per line ("Name | Site | Location") — pasting ~40 leads by
+  // hand one at a time isn't realistic. Blank fields are fine; fill in later.
+  if (parsedUrl.pathname === '/api/sales/prospects/bulk-create' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { lines } = JSON.parse(body || '{}');
+        if (!Array.isArray(lines)) throw new Error('lines must be an array');
+        const created = lines
+          .map(line => {
+            const [name, site, location] = String(line).split('|').map(s => (s || '').trim());
+            return newProspect({ name, site, location });
+          })
+          .filter(p => p.name || p.site);
+        prospects.push(...created);
+        saveSalesData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, count: created.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/sales/prospects/update' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { id, patch } = JSON.parse(body || '{}');
+        const idx = prospects.findIndex(p => p.id === id);
+        if (idx === -1) {
+          res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+          res.end(JSON.stringify({ ok: false, error: 'Not found' }));
+          return;
+        }
+        const allowed = ['name', 'site', 'location', 'contact', 'decisionMaker', 'source', 'status', 'called', 'calledAt', 'scheduledCall', 'demoBuilt', 'notes'];
+        allowed.forEach(key => {
+          if (patch && Object.prototype.hasOwnProperty.call(patch, key)) prospects[idx][key] = patch[key];
+        });
+        prospects[idx].updatedAt = new Date().toISOString();
+        saveSalesData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, prospect: prospects[idx] }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/sales/prospects/delete' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { id } = JSON.parse(body || '{}');
+        prospects = prospects.filter(p => p.id !== id);
+        saveSalesData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  // Spreads every prospect with no call booked yet across the coming work
+  // week (Mon-Fri, business-hours slots, capped per day) instead of leaving
+  // a flat list with no order to work through.
+  if (parsedUrl.pathname === '/api/sales/prospects/distribute' && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const opts = JSON.parse(body || '{}');
+        const perDay = Number(opts.perDay) > 0 ? Number(opts.perDay) : 6;
+        const startHour = 10;
+        const targets = prospects.filter(p => !p.scheduledCall && p.status !== 'won' && p.status !== 'lost');
+
+        let cursor = new Date();
+        cursor.setHours(0, 0, 0, 0);
+        cursor.setDate(cursor.getDate() + 1);
+        const isWeekend = d => d.getDay() === 0 || d.getDay() === 6;
+        while (isWeekend(cursor)) cursor.setDate(cursor.getDate() + 1);
+
+        let daySlot = 0;
+        targets.forEach(p => {
+          if (daySlot >= perDay) {
+            cursor.setDate(cursor.getDate() + 1);
+            while (isWeekend(cursor)) cursor.setDate(cursor.getDate() + 1);
+            daySlot = 0;
+          }
+          const slot = new Date(cursor);
+          slot.setHours(startHour + daySlot, 0, 0, 0);
+          p.scheduledCall = slot.toISOString();
+          p.updatedAt = new Date().toISOString();
+          daySlot++;
+        });
+        saveSalesData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, scheduled: targets.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
     return;
   }
 
