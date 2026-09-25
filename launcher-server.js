@@ -1077,6 +1077,7 @@ function newProspect(input) {
     calledAt: null,
     scheduledCall: null,
     demoBuilt: false,
+    viabilityScore: null,
     notes: String((input && input.notes) || '').trim(),
     createdAt: now,
     updatedAt: now,
@@ -1740,7 +1741,7 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, error: 'Not found' }));
           return;
         }
-        const allowed = ['name', 'site', 'location', 'contact', 'decisionMaker', 'source', 'status', 'called', 'calledAt', 'scheduledCall', 'demoBuilt', 'notes'];
+        const allowed = ['name', 'site', 'location', 'contact', 'decisionMaker', 'source', 'status', 'called', 'calledAt', 'scheduledCall', 'demoBuilt', 'viabilityScore', 'notes'];
         allowed.forEach(key => {
           if (patch && Object.prototype.hasOwnProperty.call(patch, key)) prospects[idx][key] = patch[key];
         });
