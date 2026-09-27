@@ -997,20 +997,23 @@ setInterval(() => {
 const QA_DATA_FILE = path.join(BAT_DIR, 'qa-data.json');
 let qaCases = [];
 let qaHistory = {}; // { [caseId]: [ { ...previousSnapshot, versionedAt } ] }
+let qaBugs = [];
 
 function loadQaData() {
   try {
     const parsed = JSON.parse(fs.readFileSync(QA_DATA_FILE, 'utf8'));
     qaCases = Array.isArray(parsed.cases) ? parsed.cases : [];
     qaHistory = parsed.history && typeof parsed.history === 'object' ? parsed.history : {};
+    qaBugs = Array.isArray(parsed.bugs) ? parsed.bugs : [];
   } catch (e) {
     qaCases = [];
     qaHistory = {};
+    qaBugs = [];
   }
 }
 function saveQaData() {
   try {
-    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory }, null, 2));
+    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory, bugs: qaBugs }, null, 2));
   } catch (e) { /* saving must never crash a request */ }
 }
 loadQaData();
@@ -1390,6 +1393,93 @@ const server = http.createServer((req, res) => {
         saveQaData();
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: true, case: updated, versions: qaHistory[updated.id].length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  // ── QA BUG TRACKER — basic ticket creation, read is public like cases ──
+  if (parsedUrl.pathname === '/api/qa/bugs' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ bugs: qaBugs }));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/qa/bugs/create' && req.method === 'POST') {
+    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const input = JSON.parse(body || '{}');
+        const now = new Date().toISOString();
+        const bug = {
+          id: 'bug_' + crypto.randomBytes(6).toString('hex'),
+          title: String(input.title || '').trim(),
+          description: String(input.description || '').trim(),
+          component: String(input.component || '').trim(),
+          priority: ['low', 'medium', 'high', 'critical'].includes(input.priority) ? input.priority : 'medium',
+          status: 'open',
+          reportedBy: String(input.reportedBy || '').trim(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        if (!bug.title) throw new Error('title is required');
+        qaBugs.unshift(bug);
+        saveQaData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, bug }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message || 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/qa/bugs/update' && req.method === 'POST') {
+    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { id, patch } = JSON.parse(body || '{}');
+        const idx = qaBugs.findIndex(b => b.id === id);
+        if (idx === -1) {
+          res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+          res.end(JSON.stringify({ ok: false, error: 'Not found' }));
+          return;
+        }
+        const allowed = ['title', 'description', 'component', 'priority', 'status', 'reportedBy'];
+        allowed.forEach(key => {
+          if (patch && Object.prototype.hasOwnProperty.call(patch, key)) qaBugs[idx][key] = patch[key];
+        });
+        qaBugs[idx].updatedAt = new Date().toISOString();
+        saveQaData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true, bug: qaBugs[idx] }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/qa/bugs/delete' && req.method === 'POST') {
+    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { id } = JSON.parse(body || '{}');
+        qaBugs = qaBugs.filter(b => b.id !== id);
+        saveQaData();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
