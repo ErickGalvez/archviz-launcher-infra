@@ -12,6 +12,9 @@ qa-data.json
 # Sales/prospect CRM data - real names, sites and contact info, host-only
 sales-data.json
 
+# Captured session banner image - runtime output, not source
+banner.png
+
 # Vendored binaries — not our source, just re-download if needed
 cloudflared.exe
 cloudflared-windows-amd64.exe

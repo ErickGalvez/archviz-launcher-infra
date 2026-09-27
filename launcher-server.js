@@ -57,6 +57,14 @@ function isAdmin(req, url) {
   return headerKey === ADMIN_KEY || queryKey === ADMIN_KEY;
 }
 
+// A captured frame from a live session - shown as the main site's "Enter
+// the experience" thumbnail and as the stream player's poster image
+// until the video actually starts. Admin-gated on upload: the stream
+// page's screenshot button only POSTs here when ?admin=<ADMIN_KEY> is in
+// its own URL (see avScreenshot in archviz-ui.js), so a random guest's
+// screenshot click never overwrites what visitors see before they join.
+const BANNER_FILE = path.join(BAT_DIR, 'banner.png');
+
 // Separate, narrower-scoped key for QA dashboard writes (add/edit test
 // cases). Deliberately NOT the same as ADMIN_KEY: the QA dashboard is a
 // static page on a different origin (g-741studio.com, not
@@ -1483,6 +1491,38 @@ const server = http.createServer((req, res) => {
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      }
+    });
+    return;
+  }
+
+  // ── BANNER — captured session frame, public read / admin-key write ──
+  if (parsedUrl.pathname === '/api/banner' && req.method === 'GET') {
+    if (!fs.existsSync(BANNER_FILE)) {
+      res.writeHead(404, CORS_HEADERS);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache, must-revalidate', ...CORS_HEADERS });
+    fs.createReadStream(BANNER_FILE).pipe(res);
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/banner/upload' && req.method === 'POST') {
+    if (!isAdmin(req, parsedUrl)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { image } = JSON.parse(body || '{}');
+        const match = /^data:image\/png;base64,(.+)$/.exec(image || '');
+        if (!match) throw new Error('image must be a base64 PNG data URL');
+        fs.writeFileSync(BANNER_FILE, Buffer.from(match[1], 'base64'));
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: e.message || 'Invalid body' }));
       }
     });
     return;
