@@ -1662,7 +1662,7 @@ const server = http.createServer((req, res) => {
         const pr = await ghFindLinkedPR(repo, issueNumber);
         const question = pr ? null : await ghFindQuestion(repo, issueNumber);
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: true, pr: pr ? { number: pr.number, url: pr.html_url, state: pr.state, draft: pr.pull_request && pr.pull_request.draft } : null, question }));
+        res.end(JSON.stringify({ ok: true, pr: pr ? { number: pr.number, url: pr.html_url, state: pr.state, draft: pr.pull_request && pr.pull_request.draft } : null, question, issueUrl: `https://github.com/${repo}/issues/${issueNumber}` }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: false, error: e.message }));
