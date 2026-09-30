@@ -526,6 +526,20 @@ async function forceReset() {
   return { ok: true };
 }
 
+// Checks cloudflared's own local metrics port - the same signal launchCF()
+// uses to confirm the tunnel came up in the first place - to verify it's
+// still alive later on, not just when it started.
+function isCFHealthy() {
+  return new Promise(resolve => {
+    const net = require('net');
+    const sock = net.createConnection({ port: 20241, host: '127.0.0.1' });
+    sock.setTimeout(1500);
+    sock.on('connect', () => { sock.destroy(); resolve(true); });
+    sock.on('error', () => { try { sock.destroy(); } catch (e) {} resolve(false); });
+    sock.on('timeout', () => { try { sock.destroy(); } catch (e) {} resolve(false); });
+  });
+}
+
 // ── HEALTH CHECK — catch drift between assumed and actual state ──
 // Nothing above ever rechecks its own assumptions once a status is set, so a
 // UE5 crash or a manually-closed terminal window used to leave the UI lying
@@ -547,6 +561,20 @@ setInterval(async () => {
     broadcast('ps-status', { status: 'stopped' });
     resetRoom();
     endLobbyTurnIfActive();
+    return;
+  }
+
+  // UE5 itself is still alive, but if the tunnel exposing it has silently
+  // died (its terminal window closed manually, or it crashed on its own),
+  // every visitor sees an unreachable "Connection Lost" while the launcher
+  // keeps insisting the session is fine - this exact drift is what let the
+  // Wilbur RTC connection stay dead indefinitely after a manual close,
+  // since nothing here was watching the tunnel's own health at all before.
+  // A full reset gives the next visitor a genuinely clean launch instead of
+  // inheriting a UE5 instance nothing can reach anymore.
+  if (lastCFStatus === 'active' && !(await isCFHealthy())) {
+    addLog('cf', 'Tunnel metrics port unreachable but status said active — forcing a full reset.', 'err');
+    await forceReset();
   }
 }, 8000);
 
