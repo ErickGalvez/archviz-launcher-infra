@@ -33,3 +33,10 @@ inquiries-log.jsonl
 
 # Local dev-server config (machine-specific absolute paths)
 .claude/
+
+# cad-converter - .NET build output and ad-hoc test artifacts
+cad-converter/**/bin/
+cad-converter/**/obj/
+cad-converter/**/*.dxf
+cad-converter/**/*.fbx
+!cad-converter/**/samples/*.fbx
