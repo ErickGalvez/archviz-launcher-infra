@@ -1328,7 +1328,11 @@ const server = http.createServer((req, res) => {
   // Admin-only routes — anything that stops/kills processes or manages the
   // tunnel. Not called by the public landing page, only by the local
   // launcher-client.html admin UI, which sends the key automatically.
-  const ADMIN_ROUTES = ['/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set'];
+  // /api/launch-ps belongs here too: launchPS() tears down any running
+  // UE5/Wilbur pair before relaunching, so left open, anyone on the internet
+  // could cut a live visitor's session off with one request. The public flow
+  // never calls it over HTTP - startTurn() calls launchPS() directly.
+  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set'];
   if (ADMIN_ROUTES.includes(parsedUrl.pathname) && !isAdmin(req, parsedUrl)) {
     res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
