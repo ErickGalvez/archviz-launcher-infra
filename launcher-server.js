@@ -65,6 +65,12 @@ function isAdmin(req, url) {
 // screenshot click never overwrites what visitors see before they join.
 const BANNER_FILE = path.join(BAT_DIR, 'banner.png');
 
+// Job history of the automated tests (devconsole/smoke-test.js --record, run
+// weekly by Task Scheduler): one JSON run per line. The launcher only READS
+// it - the job writes it directly, so a run is recorded even when the
+// launcher happens to be down, which is exactly when you want to know.
+const AUTOTEST_RUNS_FILE = path.join(BAT_DIR, 'autotest-runs.jsonl');
+
 // Separate, narrower-scoped key for QA dashboard writes (add/edit test
 // cases). Deliberately NOT the same as ADMIN_KEY: the QA dashboard is a
 // static page on a different origin (g-741studio.com, not
@@ -1561,6 +1567,29 @@ const server = http.createServer((req, res) => {
   }
 
   // ── DEV CONSOLE ROUTES ──────────────────────────────────────
+  // Newest first. Only the newest `full` runs carry their per-check results
+  // (the infra map needs those for "last job run" on each test); older runs
+  // are summaries, which keeps the response small however long the history gets.
+  if (parsedUrl.pathname === '/api/autotests/runs' && req.method === 'GET') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    const limit = Math.min(parseInt(parsedUrl.searchParams.get('limit'), 10) || 10, 60);
+    const full = Math.min(parseInt(parsedUrl.searchParams.get('full'), 10) || 3, limit);
+    let runs = [];
+    try {
+      if (fs.existsSync(AUTOTEST_RUNS_FILE)) {
+        runs = fs.readFileSync(AUTOTEST_RUNS_FILE, 'utf8').split('\n').filter(Boolean).slice(-200)
+          .map(line => { try { return JSON.parse(line); } catch (e) { return null; } })
+          .filter(Boolean);
+      }
+    } catch (e) { /* an unreadable history file is "no history", not a 500 */ }
+    // Newest first by timestamp, not by file order, so a clock change or a hand-edited file can't misreport "last run".
+    runs = runs.sort((a, b) => (Date.parse(b.ts) || 0) - (Date.parse(a.ts) || 0)).slice(0, limit)
+      .map((run, i) => (i < full ? run : { ...run, results: undefined }));
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ ok: true, runs }));
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/devconsole/health' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: true, githubConfigured: !!DEVCONSOLE_GITHUB_KEY }));

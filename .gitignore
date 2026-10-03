@@ -40,3 +40,6 @@ cad-converter/**/obj/
 cad-converter/**/*.dxf
 cad-converter/**/*.fbx
 !cad-converter/**/samples/*.fbx
+
+# Automated-test job history (written by devconsole/smoke-test.js --record) - runtime output
+autotest-runs.jsonl
