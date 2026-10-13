@@ -43,3 +43,19 @@ cad-converter/**/*.fbx
 
 # Automated-test job history (written by devconsole/smoke-test.js --record) - runtime output
 autotest-runs.jsonl
+
+# Bridge (device manager / Task-IO): the shared key and per-PC config never go in git; run data stays on the host
+bridge/bridge.key
+bridge/bridge-node.json
+bridge/bridge.json
+bridge-aliases.json
+taskio-tasks.jsonl
+taskio-eod.jsonl
+bridge-reserved.json
+routines-state.json
+bridge/bridge-node-state.json
+# Model + llama.cpp files a second PC downloads/copies next to join.bat - large, per-machine
+bridge/dl/
+bridge/llama/
+bridge/models/
+bridge.json

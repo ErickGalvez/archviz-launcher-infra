@@ -286,6 +286,15 @@ async function launchPS() {
     return { ok: false, error: 'launch_pixelstream.bat not found at: ' + PS_BAT };
   }
 
+  // A local AI model on this PC shares the GPU with UE5. Ask the bridge to unload it BEFORE the stream starts, so the
+  // product never competes with it for VRAM. Bounded (8 s) and non-fatal: it can delay a launch by seconds, never block it.
+  if (bridgeRoutes && bridgeRoutes.beforeRender) {
+    try {
+      const pre = await bridgeRoutes.beforeRender();
+      if (pre && pre.waitedMs > 500) addLog('bridge', `Unloaded the local model before the stream (${pre.waitedMs} ms)${pre.unloaded ? '' : ' - still unloading, continuing'}.`, 'info');
+    } catch (e) { addLog('bridge', 'Pre-render check failed (launching anyway): ' + e.message, 'warn'); }
+  }
+
   const clearedStale = await killPSProcesses();
   if (clearedStale) addLog('ps', 'Cleared a lingering previous session before relaunching.', 'info');
 
@@ -1320,6 +1329,25 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, x-qa-key, x-devconsole-key',
 };
 
+// ── BRIDGE — device manager + Task-IO ────────────────────────────
+// Lives in ./bridge/ (see bridge/README.md). Reuses this file's Dev Console key
+// check and CORS headers. It never spawns a process - the node agents on each PC
+// do the real work and this only talks to them over signed HTTP - so it adds
+// nothing to the kill-routine surface above. If it fails to load, the launcher
+// carries on without it.
+let bridgeRoutes = null;
+try {
+  bridgeRoutes = require('./bridge').init({
+    dir: BAT_DIR,
+    isAuthed: isDevConsoleAuthed,
+    cors: CORS_HEADERS,
+    log: (m, t) => addLog('bridge', m, t || 'info'),
+    getProspects: () => prospects,
+    getBugs: () => qaBugs,
+    getRenderState: () => lastPSStatus,   // stopped | starting | running | streaming: this PC is rendering a client unless it is 'stopped'
+  });
+} catch (e) { addLog('bridge', 'Bridge not loaded: ' + e.message, 'warn'); }
+
 const server = http.createServer((req, res) => {
   const url = req.url;
   const parsedUrl = new URL(req.url, 'http://localhost');
@@ -1330,6 +1358,9 @@ const server = http.createServer((req, res) => {
     res.end();
     return;
   }
+
+  // /api/bridge/* and /api/taskio/* (Dev Console key). Returns true once it has answered.
+  if (bridgeRoutes && bridgeRoutes.handle(req, res, parsedUrl)) return;
 
   // Admin-only routes — anything that stops/kills processes or manages the
   // tunnel. Not called by the public landing page, only by the local
