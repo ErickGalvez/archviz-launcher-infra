@@ -48,7 +48,13 @@ function createSupervisor(opts) {
     s.child = child;
     child.on('error', (e) => { s.error = 'model server error: ' + e.message; });
     child.on('exit', (code) => {
-      if (s.child === child) { s.child = null; if (s.phase !== 'stopping') { s.phase = s.phase === 'starting' ? 'failed' : 'stopped'; if (s.phase === 'failed') { s.error = 'model server exited (code ' + code + ')'; s.failedAt = now(); } } else s.phase = 'stopped'; }
+      if (s.child !== child) return;
+      s.child = null;
+      if (s.phase === 'stopping') { s.phase = 'stopped'; return; }          // we asked for it
+      // Any other exit is a failure - while loading, or later (out of memory, a crash). Recording it is what makes the retry delay apply:
+      // otherwise a model that keeps dying would be relaunched on every tick, reloading several GB onto the GPU every couple of seconds.
+      s.error = (s.phase === 'starting' ? 'model server exited (code ' : 'model server stopped unexpectedly (code ') + code + ')';
+      s.phase = 'failed'; s.failedAt = now();
     });
     log('model starting (' + (reason || 'requested') + ')');
     return true;

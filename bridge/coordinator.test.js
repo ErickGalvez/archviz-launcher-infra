@@ -112,6 +112,16 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
     clock.set(clock.get() + 20 * 60000);
     assert.ok(await until(async () => (await sup.tick()).phase === 'stopped'));
   });
+  await test('a model that dies on its own is recorded as a failure and not relaunched every tick: it waits out the retry delay', async () => {
+    const { sup, fake, clock } = await mkSup();
+    await sup.tick(); assert.ok(await until(async () => (await sup.tick()).phase === 'up'));
+    fake.procs[0].kill();                                            // the model process dies by itself (out of memory, a crash): we did not ask for it
+    assert.ok(await until(async () => (await sup.tick()).phase === 'failed', 3000), 'recorded as a failure');
+    assert.match(sup.status().error, /unexpected/);
+    for (let i = 0; i < 5; i++) await sup.tick();
+    assert.equal(fake.procs.length, 1, 'not relaunched on the very next ticks (a crash loop would reload the model every couple of seconds all night)');
+    clock.set(clock.get() + 61000); await sup.tick(); assert.equal(fake.procs.length, 2, 'tried again once the retry delay has passed');
+  });
   await test('a client render always wins: the model is unloaded, and never loaded, while it lasts', async () => {
     const { sup, fake } = await mkSup();
     await sup.tick({ renderBusy: true }); assert.equal(fake.procs.length, 0, 'inside the window, but rendering: do not load');
@@ -325,7 +335,7 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
     assert.match(text, /Alfa Desarrollos/); assert.match(text, /Spanish/); assert.match(text, /Drafts only/);
     assert.ok(nadia.job.confidential, 'sales data is confidential'); assert.ok(ximena.advisory && ximena.job.confidential);
     assert.match(ximena.job.messages.map((m) => m.content).join(' '), /not legal advice/);
-    const ward = all.find((t) => t.routineId === 'ward-digest').job.messages.map((m) => m.content).join(' ');
+    const ward = tio.getRaw(R.run('ward-digest', { manual: true }).taskId).job.messages.map((m) => m.content).join(' ');      // a fresh run: older unrun drafts are replaced, so look at the newest
     assert.match(ward, /gate-launch-ps \[down\]/); assert.match(ward, /privacy link/);
   });
   await test('no personal data reaches any prompt: leads are reduced to field names', () => {
@@ -336,8 +346,22 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
   await test('cloud-lane roles get proposals prepared for approval - never queued to a model, never sent', () => {
     const props = tio.proposals(), priya = props.find((t) => t.routineId === 'priya-bug-tests'), dex = props.find((t) => t.routineId === 'dex-site-backlog');
     assert.ok(priya && priya.lane === 'cloud' && priya.status === 'proposed' && /Wilbur never reconnects/.test(priya.proposal.transcript) && priya.proposal.repo === 'website');
+    assert.match(priya.proposal.transcript, /\n- \[critical\]/, 'the brief keeps its line breaks: the bug list stays a list when it reaches GitHub');
     assert.ok(dex && /blank tile/.test(dex.proposal.transcript) && !/Wilbur/.test(dex.proposal.transcript), 'only website-repo bugs go to the website repo');
     assert.ok(!tio.openJobs().some((t) => t.lane === 'cloud'), 'cloud work never enters the local queue');
+  });
+  await test('routines do not pile up: an unanswered or dismissed proposal is not proposed again, and a fresh AI draft replaces last night\'s unrun one', () => {
+    const d2 = tmp(), tio2 = createTaskio({ dir: d2, getProspects: () => prospects, getBugs: () => bugs, now: () => NOW });
+    const R4 = createRoutines({ taskio: tio2, dir: d2, policy, window: S.DEFAULT_WINDOW, now: () => NOW });
+    const priya = () => tio2.proposals().filter((t) => t.routineId === 'priya-bug-tests');
+    NOW = hhmm('2026-10-13T08:00:00Z'); R4.tick(); assert.equal(priya().length, 1);
+    NOW = hhmm('2026-10-14T08:00:00Z'); const second = R4.tick().find((x) => x.id === 'priya-bug-tests');
+    assert.ok(second && second.skipped, 'the same brief is not proposed a second night'); assert.equal(priya().length, 1);
+    const first = priya()[0]; tio2.updateTask(first.id, { status: 'dismissed' });                      // the owner said no
+    NOW = hhmm('2026-10-15T08:00:00Z'); assert.ok(R4.tick().find((x) => x.id === 'priya-bug-tests').skipped, 'a dismissed proposal does not come back the next night');
+    NOW = hhmm('2026-10-29T08:00:00Z'); assert.ok(R4.tick().find((x) => x.id === 'priya-bug-tests').taskId, 'but after two weeks it is asked again');
+    assert.equal(tio2.openJobs().filter((t) => t.routineId === 'nadia-pipeline').length, 1, 'only the newest unrun AI draft is kept');
+    NOW = hhmm('2026-10-13T08:00:00Z');
   });
   await test('routines that have nothing to work on say so instead of producing noise; owners can disable or run one now', () => {
     const empty = createTaskio({ dir: tmp(), getProspects: () => [], getBugs: () => [], now: () => NOW });
@@ -368,6 +392,20 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
   await until(async () => (await api('GET', '/api/bridge/devices')).json.devices.some((d) => d.online), 5000);
   await test('every new route is closed without the Dev Console key', async () => {
     for (const [m, p] of [['GET', '/api/bridge/queue'], ['GET', '/api/bridge/routines'], ['POST', '/api/bridge/reserve'], ['POST', '/api/bridge/model'], ['POST', '/api/bridge/routines/run'], ['POST', '/api/bridge/routines/toggle'], ['POST', '/api/taskio/ask'], ['GET', '/api/taskio/task?id=x'], ['GET', '/api/taskio/proposals']]) assert.equal((await api(m, p, m === 'POST' ? {} : undefined, 'wrong')).status, 401, p);
+  });
+  await test('hostile input never crashes a route or leaves a request hanging; an oversized body is answered with 413', async () => {
+    const posts = ['/api/bridge/alias', '/api/bridge/reserve', '/api/bridge/model', '/api/bridge/jobs', '/api/bridge/routines/run', '/api/bridge/routines/toggle', '/api/taskio/task', '/api/taskio/ask', '/api/taskio/task/update', '/api/taskio/eod/submit'];
+    const bodies = ['{', 'null', '[]', '123', '{"__proto__":{"polluted":true}}', '{"id":["a"],"alias":{"x":1},"action":{"a":1},"date":{"d":1},"tz":"abc","prompt":[1],"title":{"t":1},"patch":"x"}', '{"date":"2026-13-45","tz":1e300}', '{"date":"2026-10-14","tz":99999999999999}', '{"id":"tk_000000000000","patch":{"status":"hacked"}}'];
+    for (const p of posts) for (const b of bodies) {
+      const r = await fetch(base + p, { method: 'POST', headers: { 'x-devconsole-key': 'k', 'Content-Type': 'application/json' }, body: b, signal: AbortSignal.timeout(5000) });
+      assert.ok(r.status < 500 || r.status === 502 || r.status === 503, p + ' ' + b.slice(0, 30) + ' -> ' + r.status); await r.text();
+    }
+    for (const q of ['/api/taskio/day?date=2026-13-45', '/api/taskio/day?date=2026-10-14&tz=1e999', '/api/taskio/day?tz=abc', '/api/taskio/task?id=../../etc/passwd', '/api/taskio/eod?limit=-5', '/api/taskio/eod?date=' + 'd'.repeat(3000)]) {
+      const r = await fetch(base + q, { headers: { 'x-devconsole-key': 'k' }, signal: AbortSignal.timeout(5000) }); assert.ok(r.status < 500, q.slice(0, 50) + ' -> ' + r.status); await r.text();
+    }
+    assert.equal(({}).polluted, undefined, 'no prototype pollution');
+    assert.equal((await api('POST', '/api/taskio/task', { title: 'x'.repeat(70 * 1024) })).status, 413);
+    assert.equal((await api('GET', '/api/bridge/devices')).status, 200, 'still serving afterwards');
   });
   await test('"ask a role": the server picks the lane from the policy - local roles run on the pool, cloud roles become proposals', async () => {
     const local = await api('POST', '/api/taskio/ask', { persona: 'Nadia', area: 'sales', prompt: 'Which prospect first?', system: 'You are Nadia.' });

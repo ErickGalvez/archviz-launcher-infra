@@ -136,12 +136,25 @@ One `llama-server` per PC (default port **8097**), shared by all that PC's roles
 supervisor starts it with `-m <model> --host 127.0.0.1 --port 8097 -c 16384 -ngl 99 --jinja -fa on`. It never starts a model
 that something else already runs and never kills one it didn't start.
 
+## A one-off nightly through the Claude / GitHub lane
+
+`node bridge/nightly-once.js --date 2026-10-14` runs ONE night with the cloud roles only (QA and Dev) using what already exists, and logs it so the Virtual Team replay shows it:
+
+* **00:05** Otto runs the automated checks (`devconsole/smoke-test.js --record`, written to `autotest-runs.jsonl`).
+  Priya sends a QA brief and Dex a Dev brief through the Dev Console (`/api/devconsole/dispatch`: issue, then pull request). It only ever targets the `website` repo, the Dev Console's only target.
+* It follows both issues until a pull request appears (every 10 min until 06:30) and records the links.
+* **06:35** Otto runs the checks again. **07:00** Morgan closes the night with an EOD snapshot (`taskio-eod.jsonl`).
+
+Nothing is merged, sent or deployed: the pull requests wait for you. It is safe to re-run (dispatches are remembered in `nightly-<date>.state.json`) and is logged to `nightly-<date>.log`, Task-IO and the EOD. The replay needs the launcher running the bridge (a restart) so it can serve `/api/taskio`.
+It was scheduled with a self-deleting Task Scheduler entry (`G741-Nightly-Once-<date>`).
+
 ## Tests
 
 ```
-node bridge/bridge.test.js        # 24 checks: signing, replay, routing, two agents + hub, Task-IO
-node bridge/coordinator.test.js   # 30 checks: render awareness, nightly model, dispatcher, routines, installer
-node bridge/bridge.mutation.js    # breaks 33 protections one at a time and requires the tests to notice (ONLY="text" runs a subset)
+node bridge/bridge.test.js        # 28 checks: signing, replay, routing, two agents + hub, Task-IO
+node bridge/coordinator.test.js   # 33 checks: render awareness, nightly model, dispatcher, routines, hostile input, installer
+node bridge/nightly.test.js       # 7 checks: the one-off cloud-lane nightly against a mock launcher
+node bridge/bridge.mutation.js    # breaks 41 protections one at a time and requires the tests to notice (ONLY="text" runs a subset)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
 

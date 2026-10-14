@@ -145,6 +145,17 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
     const f = await hub.submit({ area: 'dev', confidential: true, title: 'x', messages: [{ role: 'user', content: 'secret' }] });
     assert.equal(f.lane, 'local'); assert.ok(f.deviceId);
   });
+  await test('a PC that comes back with a new identity at the same address replaces its old entry instead of leaving an offline ghost', async () => {
+    const mk = (id, port = 0) => createAgent({ key: KEY, alias: 'Frankenstein', id, port, bindHost: '127.0.0.1', discovery: false, gpuProvider: gpu(1), render: { ports: [] } });
+    const a1 = mk('111111111111'), p = await a1.start();
+    const hubG = createHub({ dir: tmp(), key: KEY, targets: [{ host: '127.0.0.1', port: p, source: 'configured' }] });
+    await hubG.refresh(); assert.equal(hubG.view().length, 1);
+    await a1.stop();
+    const a2 = mk('222222222222', p); await a2.start();                       // re-installed: same PC, same port, a fresh id
+    await hubG.refresh();
+    const v = hubG.view(); assert.equal(v.length, 1, 'one PC, one entry'); assert.equal(v[0].id, '222222222222'); assert.ok(v[0].online);
+    await a2.stop();
+  });
   await test('work spreads: with one PC busy the other takes the next job', async () => {
     await A.stop();                 // A goes away
     await hub.refresh(); await hub.refresh();
@@ -180,6 +191,16 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
     await sleep(80);
     const j = await signedFetch(base, KEY, 'GET', '/v1/jobs/' + ok.json.jobId);
     assert.equal(j.json.job.result.text, 'hi');
+  });
+  await test('a signed request with accents survives a multi-byte character split across network chunks (it must not fail the signature)', async () => {
+    const text = 'Pregunta sobre diseño y cotización: ¿cuánto cuesta? ' + 'ñ'.repeat(5000), body = JSON.stringify({ type: 'echo', messages: [{ role: 'user', content: text }] }), buf = Buffer.from(body, 'utf8');
+    const cut = buf.indexOf(Buffer.from('ñ')) + 1;                       // the middle of a 2-byte character
+    const u = new URL(base), status = await new Promise((resolve) => {
+      const headers = { ...P.signRequest(KEY, 'POST', '/v1/jobs', body), 'Content-Type': 'application/json', 'Content-Length': buf.length };
+      const req = http.request({ host: u.hostname, port: u.port, method: 'POST', path: '/v1/jobs', headers }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+      req.on('error', () => resolve(0)); req.write(buf.subarray(0, cut)); setTimeout(() => { req.write(buf.subarray(cut)); req.end(); }, 50);
+    });
+    assert.equal(status, 202, 'accepted, not 401');
   });
   await test('an llm job on a PC with no model running fails fast with a clear reason', async () => {
     const r = await signedFetch(base, KEY, 'POST', '/v1/jobs', { type: 'llm.chat', messages: [{ role: 'user', content: 'hi' }] });
@@ -219,6 +240,15 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
     assert.ok(d.tasks.every((t, i, a) => !i || a[i - 1].ts <= t.ts)); assert.equal(by('autotest')[0].status, 'failed'); assert.equal(by('autotest')[0].lane, 'script');
     assert.equal(by('qa')[0].persona, 'Priya'); assert.ok(d.tasks.filter((t) => t.persona === 'Dex').every((t) => t.lane === 'cloud'));
   });
+  await test('a role that records its own Dev Console dispatch is shown once, under the right person; others keep the derived entry', () => {
+    const d2 = tmp(); fs.writeFileSync(path.join(d2, 'devconsole-log.jsonl'), [{ ts: '2026-10-14T06:10:00Z', type: 'dispatch', repo: 'website', issueNumber: 901, title: 'QA: regression test case' }, { ts: '2026-10-14T06:11:00Z', type: 'dispatch', repo: 'website', issueNumber: 90, title: 'older unrelated issue' }].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const T2 = createTaskio({ dir: d2, now: () => Date.parse('2026-10-14T06:10:30Z') });
+    const mine = T2.createTask({ title: 'QA brief: regression test', persona: 'Priya', area: 'qa', lane: 'cloud', status: 'running', source: 'routine', ref: 'website#901' });
+    T2.patchTask(mine.task.id, { status: 'done', ref: 'website#901 -> PR 951' });             // the PR link is appended later; the issue is still recognised
+    const day2 = T2.day('2026-10-14'), dispatches = day2.tasks.filter((t) => /website#9/.test(t.ref));
+    assert.equal(dispatches.filter((t) => /website#901/.test(t.ref)).length, 1, 'issue 901 appears once'); assert.equal(dispatches.find((t) => /website#901/.test(t.ref)).persona, 'Priya');
+    assert.ok(day2.tasks.some((t) => t.source === 'devconsole' && t.ref === 'website#90'), 'issue 90 is not mistaken for 901 and keeps its derived entry');
+  });
   await test('days follow Mexico City time: a 05:30 UTC event belongs to the previous local day', () => {
     assert.ok(!d.tasks.some((t) => /late last night/.test(t.title)));
     assert.ok(T.day('2026-10-11').tasks.some((t) => /late last night/.test(t.title)));
@@ -229,6 +259,13 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
     assert.equal(d.tasks.filter((t) => /Maxica -> contacted/.test(t.title)).length, 1);
     const l = d.tasks.find((t) => t.source === 'leads'); assert.equal(l.title, '2 session requests received');
     assert.ok(!JSON.stringify(d).includes('private@example.com') && !JSON.stringify(d).includes('Private Person'));
+  });
+  await test('the Task-IO log is cached only while the file is unchanged: a write by another process (the nightly script) is seen straight away', () => {
+    const d3 = tmp(), T3 = createTaskio({ dir: d3 }), c = T3.createTask({ title: 'mine', persona: 'Priya', lane: 'script', status: 'queued' });
+    assert.equal(T3.getTask(c.task.id).status, 'queued'); assert.equal(T3.getTask(c.task.id).status, 'queued');          // second read is the cached one
+    fs.appendFileSync(path.join(d3, 'taskio-tasks.jsonl'), JSON.stringify({ type: 'update', id: c.task.id, patch: { status: 'done' } }) + '\n');   // another process writes
+    assert.equal(T3.getTask(c.task.id).status, 'done');
+    createTaskio({ dir: d3 }).patchTask(c.task.id, { detail: 'a second writer' }); assert.equal(T3.getTask(c.task.id).detail, 'a second writer');
   });
   await test('manual tasks: validated, editable only if created here, folded into the day', () => {
     assert.equal(T.createTask({ title: '   ' }).ok, false);

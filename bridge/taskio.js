@@ -22,6 +22,8 @@ const BULK = 5;                                // more than this many of the sam
 
 const readJsonl = (f) => { try { return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean); } catch (e) { return []; } };
 const clip = (s, n) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n);
+// Multi-line text (a proposal's brief): keep newlines and tabs, drop the other control characters.
+const clipText = (s, n) => String(s == null ? '' : s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').trim().slice(0, n);
 const stamp = (t) => Date.parse(t) || 0;
 
 function dayRange(date, tz) {
@@ -41,12 +43,19 @@ function createTaskio(opts) {
   // ── explicit tasks ──
   // Everything recorded here, folded from the event log. A task may carry a `job` (the prompt, kept server-side and never
   // sent to the pages) and a `result` (what the pool produced).
+  // The log is re-folded only when the file has actually changed (size + modification time), so the dispatcher's every-3-seconds reads stay cheap
+  // however long the log grows - and a write by ANOTHER process (the nightly script, a second launcher) is still seen straight away.
+  // Callers treat the tasks as read-only; views are copies.
+  let folded = { sig: '', map: null };
   function foldAll() {
+    let sig = 'none'; try { const st = fs.statSync(tasksFile); sig = st.size + ':' + st.mtimeMs; } catch (e) { /* no file yet */ }
+    if (folded.map && folded.sig === sig) return folded.map;
     const byId = new Map();
     for (const ev of readJsonl(tasksFile)) {
       if (ev.type === 'create' && ev.task) byId.set(ev.task.id, { ...ev.task });
       else if (ev.type === 'update' && byId.has(ev.id)) Object.assign(byId.get(ev.id), ev.patch || {});
     }
+    folded = { sig, map: byId };
     return byId;
   }
   const view = (t) => { const { job, remote, ...rest } = t; return mk({ ...rest, source: t.source || 'manual', hasJob: !!job }); };
@@ -103,7 +112,10 @@ function createTaskio(opts) {
   function day(date, tz = DEFAULT_TZ) {
     const r = dayRange(date, tz);
     if (!r) return null;
-    const tasks = [...explicit(r), ...fromDevconsole(r), ...fromAutotests(r), ...fromBugs(r), ...fromProspects(r), ...fromInbound(r)].sort((a, b) => a.ts - b.ts);
+    // A role that records its own Dev Console dispatch (an explicit task whose ref starts with "repo#issue") replaces the entry derived from the
+    // Dev Console log: shown once, under the right person (derived dispatches are always attributed to Dex, even a QA brief from Priya).
+    const own = explicit(r), claimed = new Set(own.map((t) => String(t.ref || '').split(' ')[0]).filter(Boolean));
+    const tasks = [...own, ...fromDevconsole(r).filter((t) => !(t.ref && claimed.has(t.ref))), ...fromAutotests(r), ...fromBugs(r), ...fromProspects(r), ...fromInbound(r)].sort((a, b) => a.ts - b.ts);
     return { date, tz, tasks, counts: counts(tasks) };
   }
   function counts(tasks) {
@@ -123,8 +135,8 @@ function createTaskio(opts) {
     return { messages, maxTokens: Math.min(Math.max(parseInt(j.maxTokens, 10) || 600, 1), 2048), thinking: !!j.thinking, role: clip(j.role, 40), area: clip(j.area, 40).toLowerCase(), confidential: !!j.confidential };
   }
   function cleanProposal(p) {
-    if (!p || !clip(p.transcript, 8000)) return null;
-    return { repo: clip(p.repo, 20) || 'website', summary: clip(p.summary, 140), transcript: clip(p.transcript, 8000), category: ['functional', 'cosmetic'].includes(p.category) ? p.category : 'functional' };
+    if (!p || !clipText(p.transcript, 8000)) return null;
+    return { repo: clip(p.repo, 20) || 'website', summary: clip(p.summary, 140), transcript: clipText(p.transcript, 8000), category: ['functional', 'cosmetic'].includes(p.category) ? p.category : 'functional' };
   }
   function createTask(input) {
     const title = clip(input && input.title, 160);
@@ -164,6 +176,8 @@ function createTaskio(opts) {
     return true;
   }
   const getTask = (id) => { const t = foldAll().get(id); return t ? view(t) : null; };
+  // Explicit tasks created at or after sinceMs that match pred (routines use it to avoid repeating themselves). Views keep the proposal, never the job.
+  const recent = (sinceMs, pred) => [...foldAll().values()].filter((t) => t.ts >= sinceMs && (!pred || pred(t))).map(view);
   const getRaw = (id) => foldAll().get(id) || null;
   // Local-lane tasks that still need to run (any day), oldest first within priority.
   const openJobs = () => [...foldAll().values()].filter((t) => t.job && (t.status === 'queued' || t.status === 'running')).sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.ts - b.ts);
@@ -183,7 +197,7 @@ function createTaskio(opts) {
 
   // Read-only access to the launcher's own logs, for the routines that summarise them.
   const readLog = (name) => (/^[\w.-]+\.jsonl$/.test(name) ? readJsonl(path.join(dir, name)) : []);
-  return { day, createTask, updateTask, patchTask, getTask, getRaw, openJobs, proposals, submitEod, listEod, getEod, readLog, getProspects, getBugs, today: (tz = DEFAULT_TZ) => todayFor(tz, now()) };
+  return { day, createTask, updateTask, patchTask, getTask, recent, getRaw, openJobs, proposals, submitEod, listEod, getEod, readLog, getProspects, getBugs, today: (tz = DEFAULT_TZ) => todayFor(tz, now()) };
 }
 
 module.exports = { createTaskio, dayRange, todayFor, DEFAULT_TZ, LANES, STATUSES };

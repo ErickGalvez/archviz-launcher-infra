@@ -19,6 +19,14 @@ const MUTATIONS = [
   ['the agent accepts any job type', 'node-agent.js', "if (!JOB_TYPES.has(b.type)) return 'unsupported job type';", ''],
   ['discovered peers are followed to any address', 'hub.js', 'if (isPrivateHost(p.address))', 'if (true)'],
   ['a PC that is down is never marked offline', 'hub.js', 'if (d.fails >= 2) d.online = false;', ''],
+  ['a role\'s own Dev Console dispatch is also shown as a derived Dex entry', 'taskio.js', '!(t.ref && claimed.has(t.ref))', 'true'],
+  ['a task is not recognised once its ref has the pull request appended', 'taskio.js', ".split(' ')[0]", ""],
+  ["the agent decodes each network chunk on its own (a split accent breaks the signature)","node-agent.js","req.setEncoding('utf8');",""],
+  ["a model that dies by itself is relaunched on the next tick","model-supervisor.js","s.phase = 'failed'; s.failedAt = now();","s.phase = 'stopped';"],
+  ["an unanswered proposal is proposed again every night","routines.js","if (dup) {","if (false) {"],
+  ["an AI draft that never ran piles up behind the next one","routines.js","x.status === 'queued')) taskio.patchTask","x.status === 'never')) taskio.patchTask"],
+  ["a PC that returns with a new id leaves an offline ghost","hub.js","devices.delete(k);",""],
+  ["the Task-IO cache never notices a change to the file","taskio.js","folded.map && folded.sig === sig","folded.map"],
   ['task days ignore the Mexico City offset', 'taskio.js', 'const start = Date.UTC(+m[1], +m[2] - 1, +m[3]) - tz * 60000;', 'const start = Date.UTC(+m[1], +m[2] - 1, +m[3]);'],
   ['inbound leads are copied into tasks verbatim', 'taskio.js', "title: leads.length + ' session request' + (leads.length > 1 ? 's' : '') + ' received' }", "title: leads.length + ' session request' + (leads.length > 1 ? 's' : '') + ' received', detail: leads.map((l) => l.email).join(',') }"],
   // ── coordination: rendering vs AI work ──
@@ -49,7 +57,7 @@ const MUTATIONS = [
   ['the prompt of a task is exposed through the API', 'taskio.js', 'const view = (t) => { const { job, remote, ...rest } = t;', 'const view = (t) => { const { remote, ...rest } = t;'],
 ];
 
-const TESTS = ['bridge.test.js', 'coordinator.test.js'];
+const TESTS = ['bridge.test.js', 'coordinator.test.js', 'nightly.test.js'];
 const runOne = (dir, f) => new Promise((resolve) => {
   const c = cp.spawn(process.execPath, [path.join(dir, f)], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; });

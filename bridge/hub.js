@@ -87,6 +87,9 @@ function createHub(opts) {
     await Promise.allSettled([...known.values()].map(async (t) => {
       try {
         const [info, stats] = await Promise.all([call(t, 'GET', '/v1/info'), call(t, 'GET', '/v1/stats')]);
+        // One address is one PC: if it now answers with a different id (re-installed, config regenerated), the old entry is a ghost - drop it,
+        // or it would sit offline forever and could be mistaken for the second PC by the Devices and 3D pages.
+        for (const [k, d] of devices) if (k !== info.id && d.address === t.host && d.port === t.port) devices.delete(k);
         devices.set(info.id, { id: info.id, nodeAlias: info.alias, hostname: info.hostname, address: t.host, port: t.port, source: t.source, online: true, lastSeen: now, fails: 0, hw: info.hw, stats, error: null });
         // Keep the node in step with what the owner chose, even after the node restarts.
         const want = reservedWant()[info.id];

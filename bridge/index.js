@@ -40,9 +40,13 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
   } catch (e) { hubError = fs.existsSync(keyFile) ? e.message : 'no bridge key yet - run: node bridge/node-agent.js --init'; hub = dispatcher = routines = null; }
 
   const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...cors }); res.end(JSON.stringify(obj)); };
-  const readBody = (req, cb) => {
+  const readBody = (req, res, cb) => {
     let body = '', big = false;
-    req.on('data', (d) => { body += d; if (body.length > MAX_BODY) { big = true; req.destroy(); } });
+    req.setEncoding('utf8');            // same reason as the node agent: never split a multi-byte character between chunks
+    req.on('data', (d) => {
+      if (big) return; body += d;
+      if (body.length > MAX_BODY) { big = true; body = ''; res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close', ...cors }); res.end(JSON.stringify({ ok: false, error: 'Body too large' }), () => req.destroy()); }   // answer first, then drop the connection
+    });
     req.on('end', () => { if (big) return; try { cb(JSON.parse(body || '{}')); } catch (e) { cb(null); } });
   };
   const tzOf = (u) => { const t = parseInt(u.searchParams.get('tz'), 10); return Number.isFinite(t) && Math.abs(t) <= 14 * 60 ? t : DEFAULT_TZ; };
@@ -59,7 +63,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     const p = u.pathname;
     if (!p.startsWith('/api/bridge/') && !p.startsWith('/api/taskio/')) return false;
     if (!isAuthed(req)) { json(res, 401, { ok: false, error: 'Unauthorized' }); return true; }
-    const post = (fn) => { readBody(req, (b) => (b ? fn(b) : json(res, 400, { ok: false, error: 'Invalid body' }))); return true; };
+    const post = (fn) => { readBody(req, res, (b) => (b ? fn(b) : json(res, 400, { ok: false, error: 'Invalid body' }))); return true; };
     const needHub = () => { if (!hub) { json(res, 503, { ok: false, error: hubError }); return false; } return true; };
 
     // ── devices + coordination ──
@@ -71,8 +75,9 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     }
     if (p === '/api/bridge/policy' && req.method === 'GET') { json(res, 200, { ok: true, policy: defaultPolicy }); return true; }
     if (p === '/api/bridge/alias' && req.method === 'POST') return post((b) => { if (!needHub()) return; const r = hub.setAlias(String(b.id || ''), b.alias); json(res, r.ok ? 200 : 400, r); });
-    if (p === '/api/bridge/reserve' && req.method === 'POST') return post((b) => { if (!needHub()) return; hub.setReserved(String(b.id || ''), !!b.reserved).then((r) => json(res, r.ok ? 200 : 400, r)); });
-    if (p === '/api/bridge/model' && req.method === 'POST') return post((b) => { if (!needHub()) return; hub.modelAction(String(b.id || ''), String(b.action || '')).then((r) => json(res, r.ok ? 200 : 409, r)); });
+    const failed = (e) => json(res, 502, { ok: false, error: 'bridge error: ' + String((e && e.message) || e).slice(0, 120) });   // an async failure must answer the request, not leave it hanging
+    if (p === '/api/bridge/reserve' && req.method === 'POST') return post((b) => { if (!needHub()) return; hub.setReserved(String(b.id || ''), !!b.reserved).then((r) => json(res, r.ok ? 200 : 400, r)).catch(failed); });
+    if (p === '/api/bridge/model' && req.method === 'POST') return post((b) => { if (!needHub()) return; hub.modelAction(String(b.id || ''), String(b.action || '')).then((r) => json(res, r.ok ? 200 : 409, r)).catch(failed); });
     if (p === '/api/bridge/queue' && req.method === 'GET') { if (!needHub()) return true; json(res, 200, dispatcher.queueView()); return true; }
     if (p === '/api/bridge/routines' && req.method === 'GET') { if (!needHub()) return true; json(res, 200, { ok: true, window: windowCfg(), routines: routines.list() }); return true; }
     if (p === '/api/bridge/routines/run' && req.method === 'POST') return post((b) => { if (!needHub()) return; const r = routines.run(String(b.id || ''), { manual: true }); json(res, r.ok ? 200 : 400, r); });

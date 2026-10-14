@@ -140,6 +140,14 @@ function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Da
     if (r.kind === 'proposal' && lane !== 'cloud') { done({ lastResult: 'blocked: policy keeps ' + r.area + ' local' }); return { ok: false, error: 'policy: ' + r.area + ' is not a cloud-lane area' }; }
     let out; try { out = r.build(g, now); } catch (e) { done({ lastResult: 'error: ' + e.message }); return { ok: false, error: e.message }; }
     if (out.skip) { done({ lastResult: 'skipped: ' + out.skip }); return { ok: true, skipped: out.skip }; }
+    // Don't repeat yourself. A brief the owner has not answered, or dismissed, is not proposed again for two weeks; an AI draft that never got
+    // to run (no PC was free) is replaced by tonight's fresher one instead of piling up behind it.
+    if (out.proposal) {
+      const dup = taskio.recent(t - 14 * DAY, (x) => x.routineId === r.id && x.proposal && x.proposal.transcript === out.proposal.transcript)[0];
+      if (dup) { done({ lastResult: 'skipped: the same brief is already ' + dup.status, lastTaskId: dup.id }); return { ok: true, skipped: 'the same brief is already ' + dup.status }; }
+    } else {
+      for (const old of taskio.recent(0, (x) => x.routineId === r.id && x.status === 'queued')) taskio.patchTask(old.id, { status: 'dismissed', detail: 'Replaced by a fresher run of the same routine.' });
+    }
     const base = { title: r.title + ' - ' + label, persona: r.persona, area: r.area, source: 'routine', routineId: r.id, advisory: !!r.advisory, priority: manual ? 3 : 0 };
     const created = out.proposal
       ? taskio.createTask({ ...base, lane: 'cloud', status: 'proposed', detail: 'Prepared for your approval - nothing is sent until you approve it.', proposal: out.proposal })

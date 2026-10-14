@@ -90,6 +90,9 @@ function Get-Verified($d, $dest) {
       if ($LASTEXITCODE -ne 0) { Start-Sleep -Seconds 2 }
     }
   }
+  # An incomplete file is NOT corrupt: keep it so the next run resumes (these are multi-GB downloads); only a complete file with the wrong hash is deleted.
+  $size = if (Test-Path $dest) { (Get-Item $dest).Length } else { 0 }
+  if ($size -ne $d.Size) { throw ("the download of " + $d.Name + " is incomplete (" + $size + " of " + $d.Size + " bytes) - check the connection and run this again; it resumes where it stopped") }
   $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
   if ($hash -ne $d.Sha) { Remove-Item $dest -Force; throw ("checksum mismatch for " + $d.Name + " - file removed, run again") }
   Say ("  verified: " + $d.Name) 'Green'

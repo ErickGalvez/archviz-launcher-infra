@@ -1313,7 +1313,8 @@ function logDevConsoleEvent(record) {
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', d => body += d);
+    req.setEncoding('utf8');   // decode across chunk boundaries (accents / n-tilde split between two chunks would otherwise be garbled)
+    req.on('data', d => { body += d; if (body.length > 1024 * 1024) { reject(new Error('Body too large')); req.destroy(); } });
     req.on('end', () => {
       try { resolve(JSON.parse(body || '{}')); }
       catch (e) { reject(new Error('Invalid JSON body')); }

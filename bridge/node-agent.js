@@ -154,6 +154,7 @@ function createAgent(opts) {
   function handle(req, res) {
     const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
     let body = '', big = false;
+    req.setEncoding('utf8');            // decode across chunk boundaries: a multi-byte character (n-tilde, accents) split between two chunks would otherwise change the body and fail the signature
     req.on('data', (d) => { body += d; if (body.length > MAX_BODY) { big = true; req.destroy(); } });
     req.on('error', () => {});
     req.on('end', () => {
