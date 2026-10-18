@@ -828,6 +828,228 @@ function logInquiry(message, ip, device) {
   }
 }
 
+// ── QUOTE REQUESTS ───────────────────────────────────────────
+// The "Get a quote" questionnaire on the public site (archviz/cotizar.html). Unlike the one-line inquiry bar it is a structured brief
+// (who they are, the project, what exists to build from, how they will use it, when, how to reach them), so it gets its own route, its
+// own log and a prospect in the sales CRM. The route is public and unauthenticated: every value is allow-listed or clipped, a honeypot
+// field quietly drops bots, and one visitor can only file a handful an hour. The page also works while this route does not exist yet
+// (it falls back to /api/inquiry), so the site can ship before the launcher is restarted.
+const QUOTES_LOG_FILE = path.join(BAT_DIR, 'quotes-log.jsonl');
+const QUOTE_MAX_BODY = 16 * 1024;
+const QUOTE_LIMIT_PER_HOUR = 6;        // recorded quotes per visitor per hour
+const QUOTE_LIMIT_ALL_PER_HOUR = 120;  // and in total, so a flood cannot fill the CRM
+const QUOTE_ENUMS = {
+  role: ['developer', 'studio', 'agent', 'brokerage', 'other'],
+  region: ['mx', 'us', 'latam', 'other'],
+  stage: ['concept', 'design', 'presale', 'building', 'delivered'],
+  units: ['1', '2-3', '4-10', '10+', 'masterplan'],
+  volume: ['1-10', '10-40', '40+', 'unknown'],
+  timing: ['asap', '30d', '1-3m', 'later', 'date'],
+  lang: ['es', 'en'],
+};
+const QUOTE_SOURCES = ['bim', 'sketchup', 'model3d', 'cad', 'pdf', 'sketch'];
+const QUOTE_USES = ['in_person', 'remote_link', 'white_label', 'lead_capture', 'team'];
+const QUOTE_TIERS = ['Creator', 'Studio', 'Agent Pro', 'Brokerage'];
+const quoteStamps = new Map();         // visitor key -> timestamps of that visitor's recorded quotes
+let quoteAllStamps = [];
+
+function quoteClip(s, n, multiline) {
+  const t = String(s == null ? '' : s).replace(multiline ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g : /[\u0000-\u001f\u007f]/g, ' ');
+  return t.trim().slice(0, n);
+}
+
+// Behind the Cloudflare tunnel every request arrives from the local connector, so the real visitor is in CF-Connecting-IP. That header is
+// believed only when the connection itself is local (it really came through the tunnel); from anywhere else it is ignored. Only a hash is kept.
+function quoteVisitorKey(req) {
+  const peer = req.socket.remoteAddress || '';
+  const local = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+  const real = local ? String(req.headers['cf-connecting-ip'] || '').split(',')[0].trim() : '';
+  return crypto.createHash('sha256').update(real || peer || 'unknown').digest('hex').slice(0, 16);
+}
+
+// Returns { q } (clean), { bot: true } (the honeypot was filled in) or { error } (the visitor can fix it).
+function sanitizeQuote(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'Invalid request' };
+  if (quoteClip(raw.website, 50)) return { bot: true };                     // a human never sees this field
+  const pick = (v, list) => (list.includes(String(v)) ? String(v) : null);
+  const many = (v, list) => [...new Set((Array.isArray(v) ? v : []).map(String).filter((x) => list.includes(x)))].slice(0, 8);
+  const c = raw.contact && typeof raw.contact === 'object' ? raw.contact : {};
+  const p = raw.project && typeof raw.project === 'object' ? raw.project : {};
+  const name = quoteClip(c.name, 80);
+  const email = quoteClip(c.email, 200).toLowerCase();
+  const digits = String(c.whatsapp == null ? '' : c.whatsapp).replace(/\D/g, '');
+  if (!name) return { error: 'Please tell us your name' };
+  if (email && !/^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s.]{2,}$/.test(email)) return { error: 'That email does not look right' };
+  if (digits && (digits.length < 8 || digits.length > 15)) return { error: 'That phone number does not look right' };
+  if (!email && !digits) return { error: 'Please leave an email or a WhatsApp number' };
+  const role = pick(raw.role, QUOTE_ENUMS.role);
+  if (!role) return { error: 'Please choose who you are' };
+  const timing = pick(raw.timing, QUOTE_ENUMS.timing) || 'later';
+  let date = null;
+  if (timing === 'date') { const m = /^\d{4}-\d{2}-\d{2}$/.exec(String(raw.date || '')); if (m && !isNaN(Date.parse(m[0]))) date = m[0]; }
+  return { q: {
+    role, region: pick(raw.region, QUOTE_ENUMS.region) || 'mx', stage: pick(raw.stage, QUOTE_ENUMS.stage), units: pick(raw.units, QUOTE_ENUMS.units),
+    sources: many(raw.sources, QUOTE_SOURCES), uses: many(raw.uses, QUOTE_USES), volume: pick(raw.volume, QUOTE_ENUMS.volume), timing, date,
+    pilot: raw.pilot === true, recommended: pick(raw.recommended, QUOTE_TIERS),
+    effort: Number.isInteger(raw.effort) && raw.effort >= 1 && raw.effort <= 4 ? raw.effort : null,
+    lang: pick(raw.lang, QUOTE_ENUMS.lang) || 'es',
+    project: { name: quoteClip(p.name, 120), location: quoteClip(p.location, 120) },
+    contact: { name, email, whatsapp: digits ? '+' + digits : '', company: quoteClip(c.company, 120) },
+    message: quoteClip(raw.message, 800, true),
+    deviceId: /^[A-Za-z0-9._-]{1,100}$/.test(String(raw.deviceId || '')) ? String(raw.deviceId) : '',
+  } };
+}
+
+function quoteSummary(q, id) {
+  const lines = [
+    'Quote request ' + id + ' (' + new Date().toISOString().slice(0, 10) + ')',
+    'Role: ' + q.role + ' · Region: ' + q.region + ' · Stage: ' + (q.stage || '-') + ' · Units: ' + (q.units || '-'),
+    'Sources: ' + (q.sources.join(', ') || '-') + ' · Uses: ' + (q.uses.join(', ') || '-') + ' · Volume: ' + (q.volume || '-') + ' · Timing: ' + q.timing + (q.date ? ' ' + q.date : ''),
+    'Recommended plan: ' + (q.recommended || '-') + ' · Digitalization effort: ' + (q.effort ? q.effort + '/4' : '-') + ' · Founding pilot: ' + (q.pilot ? 'yes' : 'no') + ' · Reply in: ' + q.lang,
+  ];
+  if (q.project.name) lines.push('Project: ' + q.project.name);
+  if (q.contact.company) lines.push('Company: ' + q.contact.company);
+  if (q.message) lines.push('Message: ' + q.message);
+  return lines.join('\n');
+}
+
+function quoteAllowed(key, now) {
+  const hourAgo = now - 3600000;
+  quoteAllStamps = quoteAllStamps.filter((t) => t > hourAgo);
+  const mine = (quoteStamps.get(key) || []).filter((t) => t > hourAgo);
+  quoteStamps.set(key, mine);
+  if (quoteStamps.size > 5000) for (const [k, v] of quoteStamps) if (!v.length) quoteStamps.delete(k);
+  return mine.length < QUOTE_LIMIT_PER_HOUR && quoteAllStamps.length < QUOTE_LIMIT_ALL_PER_HOUR;
+}
+
+// Writes the quote to its log and to the CRM: one prospect per person, so a second request from the same email or WhatsApp number
+// within a week adds to that prospect instead of creating a duplicate.
+function recordQuote(q, visitor, device) {
+  const id = 'q_' + crypto.randomBytes(5).toString('hex'), now = Date.now();
+  fs.appendFileSync(QUOTES_LOG_FILE, JSON.stringify({ ts: new Date(now).toISOString(), id, ...q, visitor, device }) + '\n');
+  const notes = quoteSummary(q, id);
+  const recent = prospects.find((p) => p.source === 'Quote form' && now - Date.parse(p.createdAt) < 7 * 86400000
+    && ((q.contact.email && String(p.contact).includes(q.contact.email)) || (q.contact.whatsapp && String(p.contact).includes(q.contact.whatsapp))));
+  if (recent) {
+    recent.notes = (recent.notes ? recent.notes + '\n\n' : '') + notes;
+    recent.updatedAt = new Date(now).toISOString();
+  } else {
+    prospects.push(newProspect({ name: q.contact.company || q.contact.name, location: q.project.location, decisionMaker: q.contact.name,
+      contact: [q.contact.name, q.contact.email, q.contact.whatsapp].filter(Boolean).join(' · '), source: 'Quote form', notes }));
+  }
+  saveSalesData();
+  return { id, duplicate: !!recent };
+}
+
+// ── LAUNCHER APP DOWNLOAD ────────────────────────────────────
+// The installer of the G741 Launcher desktop app (about 110 MB) is served from here and not from the website: it is far too big for the
+// website's repository, and the Cortex page's own sign-in check runs in the browser, which is not access control. The real check is
+// here. The owner's Google ID token is verified (signature against Google's published keys, audience, issuer, expiry, a nonce this server
+// issued that works once, a verified e-mail, and the owner's address). A good token earns a one-time ticket that lasts 60 seconds, and the
+// ticket downloads the newest installer. Someone who fails the check learns nothing about the file.
+const APP_OWNER_EMAIL = 'erickgalvez4@gmail.com';
+const APP_GOOGLE_CLIENT_ID = '343999682508-581976edlnan5gff56npk6uvr8mgmetu.apps.googleusercontent.com';
+const APP_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+const APP_JWKS_FILE = process.env.G741_APP_JWKS_FILE || '';        // tests only: Google's keys read from a file instead of the network
+const APP_INSTALLER_DIR = process.env.G741_INSTALLER_DIR || path.join(BAT_DIR, '..', '..', 'G741Launcher', 'dist');
+const APP_INSTALLER_RE = /^G741-Launcher-Setup-(\d+)\.(\d+)\.(\d+)\.exe$/;   // the only file names that are ever served
+const APP_NONCE_TTL_MS = 5 * 60 * 1000;
+const APP_TICKET_TTL_MS = 60 * 1000;
+const APP_MAX_BODY = 8 * 1024;
+const APP_LIMIT_NONCE = 20;            // nonces per visitor per hour
+const APP_LIMIT_TICKET = 10;           // ticket attempts per visitor per hour, good or bad
+const appNonces = new Map();           // nonce -> expiry
+const appTickets = new Map();          // ticket -> expiry
+const appStamps = { nonce: new Map(), ticket: new Map() };
+let appJwks = { keys: [], at: 0, tried: 0 };
+
+function appJson(res, code, obj, extra) {
+  if (res.headersSent) return;
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS_HEADERS, ...extra });
+  res.end(JSON.stringify(obj));
+}
+function appSweep(now) {
+  for (const [k, e] of appNonces) if (e <= now) appNonces.delete(k);
+  for (const [k, e] of appTickets) if (e <= now) appTickets.delete(k);
+}
+function appAllowed(kind, key, limit, now) {
+  const hourAgo = now - 3600000, mine = (appStamps[kind].get(key) || []).filter((t) => t > hourAgo);
+  appStamps[kind].set(key, mine);
+  if (appStamps[kind].size > 5000) for (const [k, v] of appStamps[kind]) if (!v.length) appStamps[kind].delete(k);
+  if (mine.length >= limit) return false;
+  mine.push(now);
+  return true;
+}
+
+function appFetchJwks() {
+  return new Promise((resolve, reject) => {
+    if (APP_JWKS_FILE) { try { return resolve(JSON.parse(fs.readFileSync(APP_JWKS_FILE, 'utf8'))); } catch (e) { return reject(e); } }
+    const r = require('https').get(APP_JWKS_URL, { timeout: 8000 }, (resp) => {
+      let b = ''; resp.setEncoding('utf8');
+      resp.on('data', (d) => { b += d; if (b.length > 100000) { resp.destroy(); reject(new Error('too large')); } });
+      resp.on('end', () => { try { resolve(JSON.parse(b)); } catch (e) { reject(e); } });
+    });
+    r.on('timeout', () => r.destroy(new Error('timeout')));
+    r.on('error', reject);
+  });
+}
+// Google rotates its signing keys: keep them for an hour, and look again (at most once a minute) when a token names a key we do not have.
+async function appJwk(kid) {
+  const now = Date.now();
+  const known = now - appJwks.at < 3600000 ? appJwks.keys.find((x) => x.kid === kid) : null;
+  if (known) return known;
+  if (now - appJwks.at >= 3600000 || now - appJwks.tried >= 60000) {
+    appJwks.tried = now;
+    try { const doc = await appFetchJwks(); if (doc && Array.isArray(doc.keys)) appJwks = { keys: doc.keys, at: Date.now(), tried: now }; } catch (e) { /* keep what we had */ }
+  }
+  return appJwks.keys.find((x) => x.kid === kid) || null;
+}
+
+// Resolves { email } or rejects with an Error whose .code says which check failed.
+async function verifyAppToken(token, nonce) {
+  const fail = (code) => { const e = new Error(code); e.code = code; return e; };
+  const dec = (p) => Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  const parts = String(token == null ? '' : token).split('.');
+  if (parts.length !== 3 || parts.some((p) => !p || !/^[A-Za-z0-9_-]+$/.test(p))) throw fail('malformed');
+  let header, payload;
+  try { header = JSON.parse(dec(parts[0]).toString('utf8')); payload = JSON.parse(dec(parts[1]).toString('utf8')); } catch (e) { throw fail('malformed'); }
+  if (!header || typeof header !== 'object' || !payload || typeof payload !== 'object') throw fail('malformed');
+  if (header.alg !== 'RS256') throw fail('bad_algorithm');                     // never "none", never a shared-secret algorithm
+  if (typeof header.kid !== 'string' || !header.kid) throw fail('unknown_key');
+  const jwk = await appJwk(header.kid);
+  if (!jwk || jwk.kty !== 'RSA') throw fail('unknown_key');
+  let ok = false;
+  try { ok = crypto.verify('RSA-SHA256', Buffer.from(parts[0] + '.' + parts[1]), crypto.createPublicKey({ key: jwk, format: 'jwk' }), dec(parts[2])); } catch (e) { ok = false; }
+  if (!ok) throw fail('bad_signature');
+  const t = Math.floor(Date.now() / 1000);
+  if (!['https://accounts.google.com', 'accounts.google.com'].includes(payload.iss)) throw fail('bad_issuer');
+  const aud = Array.isArray(payload.aud) ? (payload.aud.length === 1 ? payload.aud[0] : null) : payload.aud;
+  if (aud !== APP_GOOGLE_CLIENT_ID) throw fail('bad_audience');
+  if (typeof payload.exp !== 'number' || payload.exp <= t - 60) throw fail('expired');
+  if (typeof payload.iat !== 'number' || payload.iat > t + 60) throw fail('not_yet_valid');
+  if (t - payload.iat > 600) throw fail('too_old');                              // a token from an earlier sign-in is not this one
+  const a = Buffer.from(typeof payload.nonce === 'string' ? payload.nonce : ''), b = Buffer.from(String(nonce));
+  if (!a.length || a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw fail('bad_nonce');
+  if (payload.email_verified !== true && payload.email_verified !== 'true') throw fail('email_unverified');
+  if (typeof payload.email !== 'string' || payload.email.toLowerCase() !== APP_OWNER_EMAIL) throw fail('wrong_account');
+  return { email: payload.email.toLowerCase() };
+}
+
+// The newest installer by version, found by a fixed file-name pattern: nothing the visitor sends ever reaches the file system.
+function appInstaller() {
+  let names; try { names = fs.readdirSync(APP_INSTALLER_DIR); } catch (e) { return null; }
+  const found = names.map((n) => { const m = APP_INSTALLER_RE.exec(n); return m ? { name: n, v: [+m[1], +m[2], +m[3]] } : null; }).filter(Boolean)
+    .sort((x, y) => (y.v[0] - x.v[0]) || (y.v[1] - x.v[1]) || (y.v[2] - x.v[2]));
+  for (const f of found) {
+    const full = path.join(APP_INSTALLER_DIR, f.name);
+    try {
+      const st = fs.statSync(full);
+      if (st.isFile() && st.size > 0 && fs.realpathSync(full).startsWith(fs.realpathSync(APP_INSTALLER_DIR) + path.sep)) return { name: f.name, full, size: st.size, version: f.v.join('.') };
+    } catch (e) { /* try the next one */ }
+  }
+  return null;
+}
+
 function leaveLobby(id) {
   const before = lobbyQueue.length;
   lobbyQueue = lobbyQueue.filter(t => t.id !== id);
@@ -2106,6 +2328,96 @@ const server = http.createServer((req, res) => {
       res.writeHead(ok ? 200 : 400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
       res.end(JSON.stringify({ ok }));
     });
+    return;
+  }
+
+  if (url === '/api/quote' && req.method === 'POST') {
+    let body = '', big = false;
+    req.setEncoding('utf8');            // never split a multi-byte character between chunks
+    req.on('data', (d) => {
+      if (big) return;
+      body += d;
+      if (body.length > QUOTE_MAX_BODY) {
+        big = true; body = '';
+        res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Too large' }), () => req.destroy());   // answer first, then drop the connection
+      }
+    });
+    req.on('end', () => {
+      if (big) return;
+      const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify(obj)); };
+      let raw;
+      try { raw = JSON.parse(body || '{}'); } catch (e) { return send(400, { ok: false, error: 'Invalid request' }); }
+      const r = sanitizeQuote(raw);
+      if (r.bot) return send(200, { ok: true, id: 'q_' + crypto.randomBytes(5).toString('hex') });   // looks like success, stores nothing
+      if (r.error) return send(400, { ok: false, error: r.error });
+      const visitor = quoteVisitorKey(req), now = Date.now();
+      if (!quoteAllowed(visitor, now)) return send(429, { ok: false, error: 'Too many requests. Please try again later or write to us.' });
+      try {
+        const out = recordQuote(r.q, visitor, parseUserAgent(req.headers['user-agent']));
+        quoteStamps.get(visitor).push(now); quoteAllStamps.push(now);
+        addLog('quote', 'Quote request ' + out.id + ' (' + r.q.role + (r.q.pilot ? ', pilot' : '') + ')', 'info');
+        send(200, { ok: true, id: out.id });
+      } catch (e) { send(500, { ok: false, error: 'Could not save your request. Please email us.' }); }
+    });
+    return;
+  }
+
+  // The launcher app's installer: nonce -> Google sign-in (in the browser) -> verified here -> one-time ticket -> file. See "LAUNCHER APP DOWNLOAD".
+  if (parsedUrl.pathname === '/api/app/nonce' && req.method === 'POST') {
+    req.on('data', () => {});
+    req.on('end', () => {
+      const now = Date.now(); appSweep(now);
+      if (!appAllowed('nonce', quoteVisitorKey(req), APP_LIMIT_NONCE, now) || appNonces.size >= 500) return appJson(res, 429, { ok: false, error: 'Too many requests. Try again later.', code: 'busy' });
+      const nonce = crypto.randomBytes(24).toString('hex');
+      appNonces.set(nonce, now + APP_NONCE_TTL_MS);
+      appJson(res, 200, { ok: true, nonce });
+    });
+    return;
+  }
+  if (parsedUrl.pathname === '/api/app/download-ticket' && req.method === 'POST') {
+    let body = '', big = false;
+    req.setEncoding('utf8');
+    req.on('data', (d) => {
+      if (big) return;
+      body += d;
+      if (body.length > APP_MAX_BODY) { big = true; body = ''; res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Too large' }), () => req.destroy()); }
+    });
+    req.on('end', () => {
+      if (big) return;
+      (async () => {
+        const now = Date.now(); appSweep(now);
+        let raw; try { raw = JSON.parse(body || '{}'); } catch (e) { return appJson(res, 400, { ok: false, error: 'Invalid request', code: 'invalid' }); }
+        const credential = raw && typeof raw.credential === 'string' ? raw.credential : '', nonce = raw && typeof raw.nonce === 'string' ? raw.nonce : '';
+        if (!credential || !nonce) return appJson(res, 400, { ok: false, error: 'Missing credential', code: 'invalid' });
+        if (!appAllowed('ticket', quoteVisitorKey(req), APP_LIMIT_TICKET, now)) return appJson(res, 429, { ok: false, error: 'Too many attempts. Try again later.', code: 'busy' });
+        const expiry = appNonces.get(nonce); appNonces.delete(nonce);              // one use, whatever happens next
+        if (!expiry || expiry <= now) return appJson(res, 401, { ok: false, error: 'That sign-in expired. Try again.', code: 'bad_nonce' });
+        try { await verifyAppToken(credential, nonce); }
+        catch (e) { const wrong = e.code === 'wrong_account'; return appJson(res, wrong ? 403 : 401, { ok: false, error: wrong ? 'This download is for the owner only.' : 'That sign-in could not be verified. Try again.', code: e.code || 'invalid' }); }
+        const inst = appInstaller();
+        if (!inst) return appJson(res, 404, { ok: false, error: 'The installer is not on this host yet.', code: 'no_installer' });
+        const ticket = crypto.randomBytes(16).toString('hex');
+        appTickets.set(ticket, now + APP_TICKET_TTL_MS);
+        addLog('app', 'Launcher installer ticket issued (' + inst.name + ')', 'info');
+        appJson(res, 200, { ok: true, url: '/api/app/download?t=' + ticket, file: inst.name, size: inst.size, version: inst.version });
+      })().catch(() => appJson(res, 500, { ok: false, error: 'Something went wrong on our side.', code: 'error' }));
+    });
+    return;
+  }
+  if (parsedUrl.pathname === '/api/app/download' && req.method === 'GET') {
+    const now = Date.now(); appSweep(now);
+    const t = parsedUrl.searchParams.get('t') || '';
+    const valid = /^[0-9a-f]{32}$/.test(t) && (appTickets.get(t) || 0) > now;
+    appTickets.delete(t);                                                           // a ticket works once
+    const inst = valid ? appInstaller() : null;
+    if (!inst) { res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store', ...CORS_HEADERS }); return res.end('Not found'); }
+    addLog('app', 'Launcher installer downloaded (' + inst.name + ')', 'info');
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': inst.size, 'Content-Disposition': 'attachment; filename="' + inst.name + '"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...CORS_HEADERS });
+    const stream = fs.createReadStream(inst.full);
+    stream.on('error', () => res.destroy());
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
     return;
   }
 
