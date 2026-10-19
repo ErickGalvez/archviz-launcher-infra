@@ -99,8 +99,8 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
 
   console.log('agents + hub (loopback)');
   const llama = await fakeLlama(), dir = tmp();
-  const A = createAgent({ key: KEY, alias: 'PC-A', port: 0, bindHost: '127.0.0.1', llamaUrl: 'http://127.0.0.1:' + llama.port, model: 'fake', discovery: false, gpuProvider: gpu(5) });
-  const B = createAgent({ key: KEY, alias: 'PC-B', port: 0, bindHost: '127.0.0.1', llamaUrl: 'http://127.0.0.1:' + llama.port, model: 'fake', discovery: false, gpuProvider: gpu(90), pendingRamGB: 16 });
+  const A = createAgent({ key: KEY, alias: 'PC-A', port: 0, bindHost: '127.0.0.1', llamaUrl: 'http://127.0.0.1:' + llama.port, model: 'fake', discovery: false, gpuProvider: gpu(5), render: { ports: [] } });
+  const B = createAgent({ key: KEY, alias: 'PC-B', port: 0, bindHost: '127.0.0.1', llamaUrl: 'http://127.0.0.1:' + llama.port, model: 'fake', discovery: false, gpuProvider: gpu(90), pendingRamGB: 16, render: { ports: [] } });
   const pa = await A.start(), pb = await B.start();
   const hub = createHub({ dir, key: KEY, targets: [{ host: '127.0.0.1', port: pa, source: 'configured' }, { host: '127.0.0.1', port: pb, source: 'configured' }] });
   await hub.refresh();
@@ -170,7 +170,7 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
   });
 
   console.log('agent security');
-  const S = createAgent({ key: KEY, alias: 'PC-S', port: 0, bindHost: '127.0.0.1', llamaUrl: 'http://127.0.0.1:1', discovery: false, gpuProvider: gpu(1) });
+  const S = createAgent({ key: KEY, alias: 'PC-S', port: 0, bindHost: '127.0.0.1', llamaUrl: 'http://127.0.0.1:1', discovery: false, gpuProvider: gpu(1), render: { ports: [] } });
   const ps = await S.start(), base = 'http://127.0.0.1:' + ps;
   await test('no signature, a wrong key, a tampered body and a replayed request are all refused with a bare 401', async () => {
     assert.equal((await fetch(base + '/v1/info')).status, 401);
@@ -214,8 +214,8 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
   await test('two agents on one LAN find each other from signed beacons (skipped if this host cannot broadcast)', async () => {
     if (!P.broadcastAddresses().length) { console.log('       (no real network interface - skipped)'); return; }
     const dp = 17000 + Math.floor(Math.random() * 1000);
-    const X = createAgent({ key: KEY, alias: 'X', port: 0, bindHost: '127.0.0.1', discoveryPort: dp, discovery: true, gpuProvider: gpu(1) });
-    const Y = createAgent({ key: KEY, alias: 'Y', port: 0, bindHost: '127.0.0.1', discoveryPort: dp, discovery: true, gpuProvider: gpu(1) });
+    const X = createAgent({ key: KEY, alias: 'X', port: 0, bindHost: '127.0.0.1', discoveryPort: dp, discovery: true, gpuProvider: gpu(1), render: { ports: [] } });
+    const Y = createAgent({ key: KEY, alias: 'Y', port: 0, bindHost: '127.0.0.1', discoveryPort: dp, discovery: true, gpuProvider: gpu(1), render: { ports: [] } });
     await X.start(); await Y.start();
     let found = false;
     for (let i = 0; i < 30 && !found; i++) { await sleep(500); found = X.peers().some((p) => p.alias === 'Y') && Y.peers().some((p) => p.alias === 'X'); }
