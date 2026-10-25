@@ -15,12 +15,13 @@ const { createHub, laneFor, isConfidential } = require('./hub');
 const { createTaskio, DEFAULT_TZ } = require('./taskio');
 const { createDispatcher } = require('./dispatcher');
 const { createRoutines } = require('./routines');
+const { createVerifier } = require('./verifier');
 const { DEFAULT_WINDOW } = require('./schedule');
 const defaultPolicy = require('./policy');
 
 const MAX_BODY = 64 * 1024;
 
-function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getRenderState, hubOptions = {}, autoStart = true }) {
+function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getRenderState, tickets = null, getCases = () => [], regressions, hubOptions = {}, autoStart = true }) {
   const taskio = createTaskio({ dir, getProspects, getBugs });
   const readJson = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { return fb; } };
   const windowCfg = () => ({ ...DEFAULT_WINDOW, ...(readJson(path.join(dir, 'bridge.json'), {}).nightly || {}) });
@@ -28,10 +29,17 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
   // The hub needs the shared key. No key yet = the bridge is simply "not set up": device routes report that, Task-IO still works.
   const keyFile = process.env.G741_BRIDGE_KEY_FILE || path.join(dir, 'bridge', 'bridge.key');
   let hub = null, hubError = null, dispatcher = null, routines = null, routineTimer = null;
+  // Vera, the verifier: reads the repo checkouts named in bridge.json (verify.roots; the launcher's own folder by default) and writes verdicts onto tickets.
+  const rootsOf = () => {
+    const cfg = (readJson(path.join(dir, 'bridge.json'), {}).verify || {}).roots || {};
+    const roots = { launcher: dir, website: process.env.G741_WEBSITE_DIR, app: process.env.G741_APP_DIR, ...cfg };
+    return Object.fromEntries(Object.entries(roots).filter(([, v]) => typeof v === 'string' && path.isAbsolute(v) && fs.existsSync(v)));
+  };
+  const verifier = createVerifier({ tickets, taskio, getCases, regressions, rootsOf, log, kick: () => { if (dispatcher) dispatcher.kick(); } });
   try {
     hub = createHub({ dir, key: P.loadKey(keyFile), log, getRenderState, ...hubOptions });
-    dispatcher = createDispatcher({ hub, taskio, log, pollMs: hubOptions.dispatchMs || 3000 });
-    routines = createRoutines({ taskio, dir, policy: hub.policy, window: windowCfg(), kick: () => dispatcher.kick(), log });
+    dispatcher = createDispatcher({ hub, taskio, log, pollMs: hubOptions.dispatchMs || 3000, onDone: (t) => verifier.handleDone(t) });
+    routines = createRoutines({ taskio, dir, policy: hub.policy, window: windowCfg(), kick: () => dispatcher.kick(), log, verifier });
     if (autoStart && !process.env.G741_BRIDGE_DISABLED) {
       hub.start(); dispatcher.start();
       routineTimer = setInterval(() => { try { routines.tick(); } catch (e) { log('routines: ' + e.message); } }, 60000);
@@ -109,7 +117,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     }
     if (p === '/api/taskio/task' && req.method === 'GET') { const t = taskio.getTask(u.searchParams.get('id') || ''); json(res, t ? 200 : 404, t ? { ok: true, task: t } : { ok: false, error: 'not found' }); return true; }
     if (p === '/api/taskio/proposals' && req.method === 'GET') { json(res, 200, { ok: true, proposals: taskio.proposals() }); return true; }
-    if (p === '/api/taskio/task' && req.method === 'POST') return post((b) => { const r = taskio.createTask({ ...b, source: 'manual', job: undefined, proposal: undefined }); json(res, r.ok ? 200 : 400, r); });
+    if (p === '/api/taskio/task' && req.method === 'POST') return post((b) => { const r = taskio.createTask({ ...b, source: 'manual', job: undefined, proposal: undefined, handler: undefined }); json(res, r.ok ? 200 : 400, r); });
     // "Ask a role": the SERVER picks the lane from the policy. Local -> queued for the pool; cloud -> a proposal waiting for approval.
     if (p === '/api/taskio/ask' && req.method === 'POST') return post((b) => {
       const area = String(b.area || '').toLowerCase().slice(0, 40), prompt = String(b.prompt || '').trim().slice(0, 4000), persona = String(b.persona || 'Owner').slice(0, 40);
@@ -137,7 +145,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     json(res, 404, { ok: false, error: 'Not found' });
     return true;
   }
-  return { handle, beforeRender, taskio, hub, dispatcher, routines, stop: () => { if (hub) hub.stop(); if (dispatcher) dispatcher.stop(); if (routineTimer) clearInterval(routineTimer); } };
+  return { handle, beforeRender, taskio, hub, dispatcher, routines, verifier, stop: () => { if (hub) hub.stop(); if (dispatcher) dispatcher.stop(); if (routineTimer) clearInterval(routineTimer); } };
 }
 
 module.exports = { init };

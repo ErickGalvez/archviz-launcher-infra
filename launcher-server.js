@@ -1271,6 +1271,10 @@ const QA_DATA_FILE = path.join(BAT_DIR, 'qa-data.json');
 let qaCases = [];
 let qaHistory = {}; // { [caseId]: [ { ...previousSnapshot, versionedAt } ] }
 let qaBugs = [];
+let qaRegressions = []; // regression runs the verifier suggests: [{ id, at, cluster, caseIds, reason, status: suggested|started|dismissed, name }]
+// The ticket model (fix notes, verification, the fix queue). If the file is missing the board answers 503 instead of the launcher failing to start.
+let Tk = null;
+try { Tk = require('./bridge/tickets'); } catch (e) { console.error('Ticket module not loaded: ' + e.message); }
 
 function loadQaData() {
   try {
@@ -1278,15 +1282,18 @@ function loadQaData() {
     qaCases = Array.isArray(parsed.cases) ? parsed.cases : [];
     qaHistory = parsed.history && typeof parsed.history === 'object' ? parsed.history : {};
     qaBugs = Array.isArray(parsed.bugs) ? parsed.bugs : [];
+    qaRegressions = Array.isArray(parsed.regressions) ? parsed.regressions : [];
   } catch (e) {
     qaCases = [];
     qaHistory = {};
     qaBugs = [];
+    qaRegressions = [];
   }
+  if (Tk) qaBugs = qaBugs.map(Tk.normalize);   // tickets from before fix notes existed get their defaults
 }
 function saveQaData() {
   try {
-    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory, bugs: qaBugs }, null, 2));
+    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory, bugs: qaBugs, regressions: qaRegressions }, null, 2));
   } catch (e) { /* saving must never crash a request */ }
 }
 loadQaData();
@@ -1567,6 +1574,9 @@ try {
     log: (m, t) => addLog('bridge', m, t || 'info'),
     getProspects: () => prospects,
     getBugs: () => qaBugs,
+    tickets: Tk ? { list: () => qaBugs, get: (id) => qaBugs.find((x) => x.id === id) || null, save: saveQaData } : null,
+    getCases: () => qaCases,
+    regressions: { list: () => qaRegressions, add: (r) => { qaRegressions.unshift(r); qaRegressions.length = Math.min(qaRegressions.length, 100); saveQaData(); } },
     getRenderState: () => lastPSStatus,   // stopped | starting | running | streaming: this PC is rendering a client unless it is 'stopped'
   });
 } catch (e) { addLog('bridge', 'Bridge not loaded: ' + e.message, 'warn'); }
@@ -1701,90 +1711,64 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── QA BUG TRACKER — basic ticket creation, read is public like cases ──
-  if (parsedUrl.pathname === '/api/qa/bugs' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(JSON.stringify({ bugs: qaBugs }));
-    return;
-  }
-
-  if (parsedUrl.pathname === '/api/qa/bugs/create' && req.method === 'POST') {
-    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
-    let body = '';
-    req.on('data', d => body += d);
-    req.on('end', () => {
-      try {
-        const input = JSON.parse(body || '{}');
-        const now = new Date().toISOString();
-        const bug = {
-          id: 'bug_' + crypto.randomBytes(6).toString('hex'),
-          title: String(input.title || '').trim(),
-          description: String(input.description || '').trim(),
-          component: String(input.component || '').trim(),
-          priority: ['low', 'medium', 'high', 'critical'].includes(input.priority) ? input.priority : 'medium',
-          status: 'open',
-          reportedBy: String(input.reportedBy || '').trim(),
-          createdAt: now,
-          updatedAt: now,
-        };
-        if (!bug.title) throw new Error('title is required');
-        qaBugs.unshift(bug);
-        saveQaData();
-        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: true, bug }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: false, error: e.message || 'Invalid body' }));
+  // ── QA BUG TRACKER — the ticket board ──
+  // Reads are public like the cases, but without the thread: a fix note describes how the system works inside, so the comments, root
+  // causes and code snippets only come back for a request that carries the QA key. Every write needs the key. The model (fix notes,
+  // verification, the fix queue) is bridge/tickets.js; these routes only check the key, parse the body and call it.
+  if (parsedUrl.pathname.startsWith('/api/qa/bugs') || parsedUrl.pathname.startsWith('/api/qa/regressions')) {
+    const qaJson = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify(obj)); };
+    if (!Tk) { qaJson(503, { ok: false, error: 'The ticket module is not loaded on this host (bridge/tickets.js)' }); return; }
+    const p = parsedUrl.pathname;
+    if (req.method === 'GET' && p === '/api/qa/bugs') {
+      const full = isQaAuthed(req);
+      qaJson(200, { bugs: qaBugs.map(full ? Tk.fullView : Tk.publicView), full });
+      return;
+    }
+    if (req.method === 'GET' && p === '/api/qa/regressions') { qaJson(200, { regressions: qaRegressions }); return; }
+    if (req.method !== 'POST') { qaJson(404, { ok: false, error: 'Not found' }); return; }
+    if (!isQaAuthed(req)) { qaJson(401, { ok: false, error: 'Unauthorized' }); return; }
+    readJsonBody(req).then((b) => {
+      const bug = () => qaBugs.find((x) => x.id === String((b && b.id) || ''));
+      const missing = () => qaJson(404, { ok: false, error: 'Not found' });
+      if (p === '/api/qa/bugs/create') {
+        const made = Tk.create(b);
+        qaBugs.unshift(made); saveQaData();
+        return qaJson(200, { ok: true, bug: Tk.fullView(made) });
       }
-    });
-    return;
-  }
-
-  if (parsedUrl.pathname === '/api/qa/bugs/update' && req.method === 'POST') {
-    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
-    let body = '';
-    req.on('data', d => body += d);
-    req.on('end', () => {
-      try {
-        const { id, patch } = JSON.parse(body || '{}');
-        const idx = qaBugs.findIndex(b => b.id === id);
-        if (idx === -1) {
-          res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-          res.end(JSON.stringify({ ok: false, error: 'Not found' }));
-          return;
-        }
-        const allowed = ['title', 'description', 'component', 'priority', 'status', 'reportedBy'];
-        allowed.forEach(key => {
-          if (patch && Object.prototype.hasOwnProperty.call(patch, key)) qaBugs[idx][key] = patch[key];
-        });
-        qaBugs[idx].updatedAt = new Date().toISOString();
-        saveQaData();
-        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: true, bug: qaBugs[idx] }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      if (p === '/api/qa/bugs/update') {
+        const t = bug(); if (!t) return missing();
+        Tk.patch(t, b.patch, { by: b.by }); saveQaData();
+        return qaJson(200, { ok: true, bug: Tk.fullView(t) });
       }
-    });
-    return;
-  }
-
-  if (parsedUrl.pathname === '/api/qa/bugs/delete' && req.method === 'POST') {
-    if (!isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
-    let body = '';
-    req.on('data', d => body += d);
-    req.on('end', () => {
-      try {
-        const { id } = JSON.parse(body || '{}');
-        qaBugs = qaBugs.filter(b => b.id !== id);
-        saveQaData();
-        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: false, error: 'Invalid body' }));
+      if (p === '/api/qa/bugs/comment') {
+        const t = bug(); if (!t) return missing();
+        const c = Tk.addComment(t, b); saveQaData();
+        return qaJson(200, { ok: true, comment: c, bug: Tk.fullView(t) });
       }
-    });
+      if (p === '/api/qa/bugs/fix') {
+        const t = bug(); if (!t) return missing();
+        const c = Tk.addFix(t, b); saveQaData();
+        if (bridgeRoutes && bridgeRoutes.verifier) { try { bridgeRoutes.verifier.sweep({ only: t.id, priority: 3 }); } catch (e) { addLog('bridge', 'verifier: ' + e.message, 'warn'); } }
+        return qaJson(200, { ok: true, comment: c, bug: Tk.fullView(t) });
+      }
+      if (p === '/api/qa/bugs/verify') {
+        const t = bug(); if (!t) return missing();
+        const c = Tk.addVerification(t, { ...b, by: b.by || 'Owner', role: 'Owner', method: 'manual' }); saveQaData();
+        return qaJson(200, { ok: true, comment: c, bug: Tk.fullView(t) });
+      }
+      if (p === '/api/qa/bugs/delete') {
+        qaBugs = qaBugs.filter((x) => x.id !== String((b && b.id) || '')); saveQaData();
+        return qaJson(200, { ok: true });
+      }
+      if (p === '/api/qa/regressions/update') {
+        const r = qaRegressions.find((x) => x.id === String((b && b.id) || '')); if (!r) return missing();
+        if (['suggested', 'started', 'dismissed'].includes(b.status)) r.status = b.status;
+        if (typeof b.run === 'string') r.run = b.run.replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 80);
+        saveQaData();
+        return qaJson(200, { ok: true, regression: r });
+      }
+      return qaJson(404, { ok: false, error: 'Not found' });
+    }).catch((e) => qaJson(400, { ok: false, error: e && e.message ? e.message : 'Invalid body' }));
     return;
   }
 

@@ -148,7 +148,7 @@ function createTaskio(opts) {
     const status = STATUSES.includes(input.status) ? input.status : (job ? 'queued' : proposal ? 'proposed' : 'queued');
     const t = { id: 'tk_' + crypto.randomBytes(6).toString('hex'), ts: now(), persona: clip(input.persona, 40) || 'Owner', area: clip(input.area, 40).toLowerCase() || 'general',
       lane, status, title, detail: clip(input.detail, 800), ref: clip(input.ref, 120), deviceId: input.deviceId ? clip(input.deviceId, 40) : null, source: SOURCES.includes(input.source) ? input.source : 'manual',
-      priority: Math.min(Math.max(parseInt(input.priority, 10) || 0, 0), 9), advisory: !!input.advisory, routineId: clip(input.routineId, 40) || undefined, attempts: 0, ...(job ? { job } : {}), ...(proposal ? { proposal } : {}) };
+      priority: Math.min(Math.max(parseInt(input.priority, 10) || 0, 0), 9), advisory: !!input.advisory, routineId: clip(input.routineId, 40) || undefined, handler: clip(input.handler, 20) || undefined, attempts: 0, ...(job ? { job } : {}), ...(proposal ? { proposal } : {}) };
     fs.appendFileSync(tasksFile, JSON.stringify({ type: 'create', task: t }) + '\n');
     return { ok: true, task: view(t) };
   }

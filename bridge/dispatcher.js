@@ -14,7 +14,8 @@
 const MAX_ATTEMPTS = 3;
 const RETRYABLE = /^rendering:|llm_unavailable|offline|unloaded|ECONN|fetch failed|timed out|no such job/i;
 
-function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = () => {}, maxAttempts = MAX_ATTEMPTS }) {
+// onDone(task) is called once a local task has finished with a result (a role such as Vera turns the answer into something: a verdict on a ticket).
+function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = () => {}, maxAttempts = MAX_ATTEMPTS, onDone = () => {} }) {
   let timer = null, busy = false, lastTick = 0, lastNote = '';
   const alias = (d) => d.alias || d.nodeAlias || d.id;
 
@@ -36,6 +37,7 @@ function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = ()
     if (j.status === 'done') {
       taskio.patchTask(t.id, { status: 'done', result: { text: (j.result && j.result.text) || '', tokens: (j.result && j.result.tokens) || 0, deviceId: d.id, ms: (j.doneAt || now()) - (j.startedAt || now()) }, doneAt: now(), detail: 'Done on ' + alias(d) + '.', remote: null });
       log('done "' + t.title + '" on ' + alias(d));
+      try { onDone(taskio.getRaw(t.id)); } catch (e) { log('on-done handler failed: ' + e.message); }
     } else if (j.status === 'failed') {
       if (/^rendering:/.test(j.error || '') || /llm_unavailable|unloaded/.test(j.error || '')) return requeue(t, alias(d) + ': ' + j.error + '; moved to another PC');
       const attempts = (t.attempts || 0) + 1;

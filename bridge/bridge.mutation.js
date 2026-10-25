@@ -55,16 +55,17 @@ const MUTATIONS = [
   ['a lead\'s e-mail reaches a prompt', 'routines.js', "Object.keys(l).filter((k) => k !== 'ts')", "Object.keys(l).filter((k) => k !== 'ts').concat([l.email])"],
   ['a request can choose its own lane', 'index.js', 'const lane = laneFor(defaultPolicy, area, false), title = String(b.title || prompt).slice(0, 80);', "const lane = (b.lane === 'cloud' ? 'cloud' : laneFor(defaultPolicy, area, false)), title = String(b.title || prompt).slice(0, 80);"],
   ['the prompt of a task is exposed through the API', 'taskio.js', 'const view = (t) => { const { job, remote, ...rest } = t;', 'const view = (t) => { const { remote, ...rest } = t;'],
-];
+].concat(require('./tickets.mutations.js'));          // the ticket model, Vera and the fix-note reader
 
-const TESTS = ['bridge.test.js', 'coordinator.test.js', 'nightly.test.js'];
+const TESTS = ['bridge.test.js', 'coordinator.test.js', 'nightly.test.js', 'tickets.test.js', 'verifier.test.js', 'fixnote.test.js'];
 const runOne = (dir, f) => new Promise((resolve) => {
   const c = cp.spawn(process.execPath, [path.join(dir, f)], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; });
   const t = setTimeout(() => { try { c.kill(); } catch (e) { /* gone */ } }, 150000);
   c.on('close', (code) => { clearTimeout(t); resolve({ code, out }); });
 });
-const runAll = async (dir) => { const rs = await Promise.all(TESTS.map((f) => runOne(dir, f))); return { red: rs.some((r) => r.code !== 0), out: rs.map((r) => r.out).join('\n') }; };
+const NEW = require('./tickets.mutations.js'), NEW_NAMES = new Set(NEW.map((m) => m[0]));   // these are caught by the three fast test files, so only those run for them
+const runAll = async (dir, files = TESTS) => { const rs = await Promise.all(files.map((f) => runOne(dir, f))); return { red: rs.some((r) => r.code !== 0), out: rs.map((r) => r.out).join('\n') }; };
 const copy = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'g741-bridge-mut-')); for (const f of fs.readdirSync(__dirname)) if (/\.(js|ps1|bat)$/.test(f) && f !== 'bridge.mutation.js') fs.copyFileSync(path.join(__dirname, f), path.join(d, f)); return d; };
 
 (async () => {
@@ -78,8 +79,8 @@ const copy = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'g741-bridg
     if (process.env.ONLY && !name.includes(process.env.ONLY)) continue;           // e.g. ONLY="rendering" re-checks a subset
     const d = copy(), f = path.join(d, file), src = fs.readFileSync(f, 'utf8');
     if (!src.includes(from)) { failures++; console.log('  FAIL "' + name + '" - MUTATION DID NOT APPLY (source changed; update this list)'); fs.rmSync(d, { recursive: true, force: true }); continue; }
-    fs.writeFileSync(f, src.replace(from, to));
-    const r = await runAll(d), which = (r.out.match(/FAIL (.+)/g) || []).slice(0, 2).map((s) => s.slice(5, 72)).join(' | ');
+    fs.writeFileSync(f, src.replace(from, () => to));
+    const r = await runAll(d, NEW_NAMES.has(name) ? NEW.TESTS : TESTS), which = (r.out.match(/FAIL (.+)/g) || []).slice(0, 2).map((s) => s.slice(5, 72)).join(' | ');
     if (!r.red) failures++;
     console.log((r.red ? '  pass ' : '  FAIL ') + 'breaking "' + name + '" is ' + (r.red ? 'caught by: ' + (which || 'a crash') : 'NOT CAUGHT'));
     fs.rmSync(d, { recursive: true, force: true });

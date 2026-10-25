@@ -24,6 +24,7 @@ module.exports = {
     management: 'local',
     legal: 'local',
     compliance: 'local',
+    verify: 'local',        // Vera checks fixes with the local model: the code she reads and the notes she writes stay on our PCs
   },
   confidentialAreas: ['legal', 'compliance', 'sales', 'strategy', 'security', 'management'],
 };

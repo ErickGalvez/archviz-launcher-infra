@@ -113,9 +113,20 @@ const ROUTINES = [
       return { proposal: { repo: 'website', category: 'functional', summary: 'Fix the open website bugs',
         transcript: `Dev request from Dex: these open bugs look like they live in the website repo:\n${list}\n\nInvestigate each, fix the ones you can with minimal changes, and say clearly which you could not reproduce. Open the change as a pull request; do not merge.` } };
     } },
+  // ── Vera (verification): she does the work herself, with the local model, and records it on the tickets ──
+  { id: 'vera-verify', persona: 'Vera', area: 'verify', role: 'Verification', title: 'Verify the fixed tickets', schedule: 'nightly', kind: 'action',
+    act({ verifier }) {
+      const r = verifier.sweep({ limit: 8 });
+      return r.considered ? { summary: `${r.considered} fixed ticket(s) waiting: ${r.recorded} settled by the static checks, ${r.queued} sent to the model, ${r.skipped} already in progress` } : { skipped: 'no fixed ticket is waiting for a verdict' };
+    } },
+  { id: 'vera-regression', persona: 'Vera', area: 'verify', role: 'Verification', title: 'Pick a small regression run', schedule: 'weekly', kind: 'action',
+    act({ verifier, manual }) {
+      const r = verifier.suggestRegression({ force: !!manual });         // sporadic on purpose: the owner pressing "run now" always gets one
+      return r.suggestion ? { summary: `suggested ${r.suggestion.cluster.id}: ${r.suggestion.caseIds.length} cases (${r.suggestion.name})` } : { skipped: r.skipped };
+    } },
 ];
 
-function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Date.now, kick = () => {}, log = () => {}, tz = -360 }) {
+function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Date.now, kick = () => {}, log = () => {}, tz = -360, verifier = null }) {
   const stateFile = path.join(dir, 'routines-state.json');
   const load = () => { try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch (e) { return {}; } };
   const save = (st) => { try { fs.writeFileSync(stateFile, JSON.stringify(st, null, 2)); } catch (e) { log('could not save routine state: ' + e.message); } };
@@ -137,6 +148,15 @@ function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Da
     const done = (patch) => { Object.assign(st[id], { lastRunAt: t, lastNightKey: nightKey(t, window) }, patch); save(st); };
     const lane = laneOf(r);
     if (r.kind === 'ai' && lane !== 'local') { done({ lastResult: 'blocked: policy keeps ' + r.area + ' off the local pool' }); return { ok: false, error: 'policy: ' + r.area + ' is not a local-lane area' }; }
+    if (r.kind === 'action' && lane !== 'local') { done({ lastResult: 'blocked: policy keeps ' + r.area + ' off the local pool' }); return { ok: false, error: 'policy: ' + r.area + ' is not a local-lane area' }; }
+    // An action routine does its work itself (Vera checking tickets or picking a regression run) and reports a one-line result.
+    if (r.kind === 'action') {
+      if (!verifier) { done({ lastResult: 'skipped: no verifier' }); return { ok: true, skipped: 'no verifier' }; }
+      let res; try { res = r.act({ verifier, manual }); } catch (e) { done({ lastResult: 'error: ' + e.message }); return { ok: false, error: e.message }; }
+      if (res.skipped) { done({ lastResult: 'skipped: ' + res.skipped }); return { ok: true, skipped: res.skipped }; }
+      done({ lastResult: res.summary || 'done' });
+      return { ok: true, summary: res.summary };
+    }
     if (r.kind === 'proposal' && lane !== 'cloud') { done({ lastResult: 'blocked: policy keeps ' + r.area + ' local' }); return { ok: false, error: 'policy: ' + r.area + ' is not a cloud-lane area' }; }
     let out; try { out = r.build(g, now); } catch (e) { done({ lastResult: 'error: ' + e.message }); return { ok: false, error: e.message }; }
     if (out.skip) { done({ lastResult: 'skipped: ' + out.skip }); return { ok: true, skipped: out.skip }; }
