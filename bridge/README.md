@@ -55,11 +55,35 @@ The window is `nightly` in each PC's `bridge-node.json` (when its model stays lo
 | Policy watch | Justine (legal) | local | advisory draft |
 | Bug regression tests | Priya (QA) | cloud | **proposal** — waits for you |
 | Website backlog | Dex (Dev) | cloud | **proposal** — waits for you |
+| Verify the fixed tickets | Vera (verification) | local | verdicts on tickets, nightly (see below) |
+| Pick a small regression run | Vera | local | a suggestion on the QA console's Test Runs page, now and then |
 
 Local routines only receive data the launcher already holds, with leads reduced to field names (no names, e-mails or
 phones in any prompt). **Dev and QA never run on a local model**: their routines only prepare a proposal; when you approve it
 on the Task-IO page it goes through the existing Dev Console dispatch (issue → pull request) and you merge. Legal,
 compliance, sales, strategy, security and management are **confidential** — forced local even if `policy.js` is edited.
+
+## Tickets, fix notes and Vera, the verifier
+
+The QA console's Bugs tab is the error database. `tickets.js` is its model (pure functions, no HTTP): a ticket has a type, the team area
+that should fix it, the test case it came from, and a thread of comments, **fix notes** and **verifications**. A fix note carries the root
+cause, how it was solved, the commit (the link is built from the sha, never taken from the request), the changed code, its context and dev notes;
+recording one moves the ticket to Fixed. The launcher routes (`/api/qa/bugs/comment|fix|verify|recheck`, `/api/qa/regressions`) need the QA key,
+and without it the public list shows only counts and the commit link, never the thread, a root cause or code.
+
+**Vera** (`verifier.js`; area `verify`, local lane, same ticket-store and repo-read access as the QA and Dev roles, nothing else) checks every fixed
+ticket's latest fix note: STATIC CHECKS first (the files exist inside a checkout named in `bridge.json` > `verify.roots`, the new lines are in the
+file, the old ones are gone; only source files are read, never keys, vaults, logs or data files), then a review by the local model. Only a missing
+file or missing new code reopens a ticket; the model's doubt alone only asks for a human look ("needs a look"). A fix she already judged is never
+checked twice (a new fix note is new work; a person can press "Ask Vera to check again"). She runs when a fix note is recorded and in the nightly
+window, and once in a while suggests a small regression run (5 to 10 cases of one feature).
+
+`fixnote.js` turns a diff and a pull request description into the same structured note: `devconsole/fix-note.js` (website repo) records one from a
+commit, and merging a pull request from the Dev Console records its "### Fix note: bug_..." sections on the tickets it names.
+
+```json
+{ "verify": { "roots": { "website": "Y:\\ArchVizChallenge\\Local_Archviz_GITHUB\\ARCHVIZ", "app": "Y:\\ArchVizChallenge\\G741Launcher" } } }
+```
 
 ## Security model (read this once)
 
@@ -154,7 +178,10 @@ It was scheduled with a self-deleting Task Scheduler entry (`G741-Nightly-Once-<
 node bridge/bridge.test.js        # 28 checks: signing, replay, routing, two agents + hub, Task-IO
 node bridge/coordinator.test.js   # 33 checks: render awareness, nightly model, dispatcher, routines, hostile input, installer
 node bridge/nightly.test.js       # 7 checks: the one-off cloud-lane nightly against a mock launcher
-node bridge/bridge.mutation.js    # breaks 41 protections one at a time and requires the tests to notice (ONLY="text" runs a subset)
+node bridge/tickets.test.js       # 22 checks: the ticket model, fix notes, verdicts, the fix queue, what is private
+node bridge/verifier.test.js      # 40 checks: Vera's static checks, the model's answer, never-twice, regression picks
+node bridge/fixnote.test.js       # 12 checks: diffs and pull request notes become fix notes
+node bridge/bridge.mutation.js    # breaks 102 protections one at a time and requires the tests to notice (ONLY="text" runs a subset)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
 
