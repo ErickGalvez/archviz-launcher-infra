@@ -132,7 +132,7 @@ function addFix(bug, input, { now } = {}) {
   const files = (Array.isArray(i.files) ? i.files : []).map((f) => clip(f, 200)).filter(Boolean).slice(0, 20);
   const snippet = cleanSnippet(i.snippet);
   const rev = bug.fixRev + 1, at = isoNow(now);
-  const fix = { rev, repo, commit: commit.toLowerCase(), commitUrl: commitUrl(repo, commit), branch: clip(i.branch, 80), files, rootCause, solution, context: clipText(i.context, 1500), notes: clipText(i.notes, 2000), snippet, by: clip(i.by, 40) || 'Dev', role: clip(i.role, 40), at };
+  const fix = { rev, repo, commit: commit.toLowerCase(), commitUrl: commitUrl(repo, commit), branch: clip(i.branch, 80), files, rootCause, solution, context: clipText(i.context, 1500), notes: clipText(i.notes, 2000), snippet, viaMerge: i.viaMerge === true, by: clip(i.by, 40) || 'Dev', role: clip(i.role, 40), at };
   const c = { id: newId('c_'), at, by: fix.by, role: fix.role, kind: 'fix', text: solution.slice(0, 300), fix };
   bug.comments.push(c);
   if (bug.comments.length > MAX_COMMENTS) bug.comments.splice(0, bug.comments.length - MAX_COMMENTS);
@@ -160,6 +160,7 @@ function addVerification(bug, input, { now } = {}) {
   if (bug.comments.length > MAX_COMMENTS) bug.comments.splice(0, bug.comments.length - MAX_COMMENTS);
   bug.verification = v;
   if (v.result === 'failed') bug.status = 'open';
+  else if (v.result === 'verified' && bug.status === 'open') bug.status = 'fixed';      // a reopened ticket whose fix is now confirmed is fixed again
   bug.updatedAt = at;
   return c;
 }
@@ -183,9 +184,30 @@ function queueState(b) {
 
 // Does this verifier still owe this ticket a verification? Fixed with a fix note, and nothing recorded by THIS verifier for THIS revision
 // (whatever the verdict was: a verified fix is never re-verified, and an "unsure" one waits for a human instead of looping every night).
+// Someone can ask for a fresh look at the SAME revision (requestRecheck): that is the one way a verdict is given twice, and it is a person's decision.
+// A reopened ticket is only looked at again when that happens.
 function needsVerification(b, by) {
-  if (!b || b.status !== 'fixed' || !(b.fixRev > 0)) return false;
-  return !(b.comments || []).some((c) => c.kind === 'verification' && c.verification && c.verification.by === by && c.verification.fixRev === b.fixRev);
+  if (!b || !(b.fixRev > 0) || (b.status !== 'fixed' && b.status !== 'open')) return false;
+  let lastVerdict = -1, lastAsk = -1;
+  (b.comments || []).forEach((c, i) => {
+    if (c.kind === 'verification' && c.verification && c.verification.by === by && c.verification.fixRev === b.fixRev) lastVerdict = i;
+    if (c.kind === 'recheck' && c.fixRev === b.fixRev) lastAsk = i;
+  });
+  const asked = lastAsk > lastVerdict;
+  return b.status === 'open' ? asked : (lastVerdict < 0 || asked);
+}
+
+// "Check again": for when the code has changed since the verdict (the checkout was behind, the fix was completed by hand). It asks the verifier, it does not
+// decide anything itself.
+function requestRecheck(bug, input, { now } = {}) {
+  if (!(bug.fixRev > 0)) throw new Error('this ticket has no fix note to check');
+  if (bug.status === 'wontfix') throw new Error("this ticket is marked won't fix");
+  const by = clip(input && input.by, 40) || 'QA console', at = isoNow(now);
+  const c = { id: newId('c_'), at, by, role: '', kind: 'recheck', fixRev: bug.fixRev, text: 'Asked for a new check of fix #' + bug.fixRev };
+  bug.comments.push(c);
+  if (bug.comments.length > MAX_COMMENTS) bug.comments.splice(0, bug.comments.length - MAX_COMMENTS);
+  bug.updatedAt = at;
+  return c;
 }
 
 // What leaves the building without the QA key: the ticket as before plus the new routing fields and counts. No thread, and no code
@@ -199,4 +221,4 @@ function publicView(b) {
 // With the QA key: everything, thread included.
 function fullView(b) { const n = normalize(b); return { ...n, queue: queueState(n), commentCount: n.comments.length }; }
 
-module.exports = { STATUSES, PRIORITIES, TYPES, AREAS, VERDICTS, REPOS, MAX_COMMENTS, normalize, create, patch, addComment, addFix, addVerification, queueState, needsVerification, publicView, fullView, commitUrl, clip, clipText };
+module.exports = { STATUSES, PRIORITIES, TYPES, AREAS, VERDICTS, REPOS, MAX_COMMENTS, normalize, create, patch, addComment, addFix, addVerification, requestRecheck, queueState, needsVerification, publicView, fullView, commitUrl, clip, clipText };

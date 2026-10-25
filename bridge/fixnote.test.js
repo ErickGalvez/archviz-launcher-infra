@@ -133,5 +133,18 @@ test('the built note is accepted by the ticket model as it is, and the commit li
   assert.equal(b.status, 'fixed'); assert.equal(c.fix.commitUrl, 'https://github.com/ErickGalvez/archviz-launcher-infra/commit/abcdef1234'); assert.ok(c.fix.snippet.after.includes('onpointerdown'));
 });
 
+test('recording a merge puts a note on each named ticket (marked as from a merge), skips the rest, and never throws', () => {
+  const mk = (id, status) => T.create({ title: 'T ' + id }, { id, now: Date.parse('2026-10-25T12:00:00Z') }) && Object.assign(T.create({ title: 'T ' + id }, { id }), status ? { status } : {});
+  const tickets = [mk('bug_0123456789ab'), mk('bug_aaaaaaaaaaaa'), mk('bug_cccccccccccc', 'wontfix')];
+  const body = BODY + '\n### Fix note: bug_cccccccccccc\nRoot cause: x\nSolution: y\n### Fix note: bug_dddddddddddd\nRoot cause: x\nSolution: y';
+  const r = F.recordFromMerge({ tickets, Tk: T, body, diff: DIFF, sha: 'abcdef1234', repoKey: 'website' });
+  assert.deepEqual(r.recorded, [{ ticketId: 'bug_0123456789ab', rev: 1 }]);
+  assert.deepEqual(r.skipped.map((s) => s.ticket).sort(), ['bug_aaaaaaaaaaaa', 'bug_cccccccccccc', 'bug_dddddddddddd']);
+  const t = tickets[0]; assert.equal(t.status, 'fixed'); assert.equal(t.fix.viaMerge, true); assert.equal(t.fix.commitUrl, 'https://github.com/ErickGalvez/ARCHVIZ/commit/abcdef1234'); assert.equal(tickets[1].fixRev, 0);
+  assert.deepEqual(F.recordFromMerge({ tickets, Tk: T, body: 'no notes', diff: DIFF, sha: 'abcdef1234', repoKey: 'website' }), { recorded: [], skipped: [] });
+  const bad = F.recordFromMerge({ tickets, Tk: T, body: BODY, diff: DIFF, sha: 'not-a-sha', repoKey: 'website' });      // an invalid sha is refused by the ticket model: reported, not thrown
+  assert.equal(bad.recorded.length, 0); assert.ok(bad.skipped.some((s) => /git sha/.test(s.reason)));
+});
+
 console.log('\n' + results.filter((r) => r[0]).length + ' passed, ' + results.filter((r) => !r[0]).length + ' failed');
 process.exit(results.some((r) => !r[0]) ? 1 : 0);

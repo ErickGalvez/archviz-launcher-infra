@@ -98,9 +98,22 @@ function buildFixNotes({ body, diff, sha, repoKey, tickets, by = 'Dex', role = '
     if (!s.rootCause || !s.solution) { skipped.push({ ticket: s.ticket, reason: 'the section needs a root cause and how it was solved' }); continue; }
     const listed = s.files.filter((f) => files.some((d) => d.file === f));
     notes.push({ ticketId: s.ticket, input: { repo: repoKey, commit: sha, files: (listed.length ? listed : s.files.length ? s.files : files.filter((f) => !f.deleted).map((f) => f.file)).slice(0, 20),
-      rootCause: s.rootCause, solution: s.solution, context: s.context, notes: s.notes, snippet: snippetFromDiff(files, listed.length ? listed : s.files), by, role } });
+      rootCause: s.rootCause, solution: s.solution, context: s.context, notes: s.notes, snippet: snippetFromDiff(files, listed.length ? listed : s.files), viaMerge: true, by, role } });
   }
   return { notes, skipped };
 }
 
-module.exports = { parseDiff, snippetFromDiff, fitLines, primaryFile, parsePrBody, buildFixNotes, MAX_SNIPPET };
+// Puts the notes a merge leaves onto the tickets (Tk is bridge/tickets.js; `tickets` is the store's list). Says what was recorded and what was left out, and
+// never throws: a bad section must not stop the others, nor the merge it came from. The caller saves the store afterwards.
+function recordFromMerge({ tickets, Tk, body, diff, sha, repoKey, now }) {
+  const { notes, skipped } = buildFixNotes({ body, diff, sha, repoKey, tickets });
+  const recorded = [];
+  for (const { ticketId, input } of notes) {
+    const t = (tickets || []).find((b) => b.id === ticketId);
+    try { const c = Tk.addFix(t, input, { now }); recorded.push({ ticketId, rev: c.fix.rev }); }
+    catch (e) { skipped.push({ ticket: ticketId, reason: e.message }); }
+  }
+  return { recorded, skipped };
+}
+
+module.exports = { parseDiff, snippetFromDiff, fitLines, primaryFile, parsePrBody, buildFixNotes, recordFromMerge, MAX_SNIPPET };

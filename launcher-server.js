@@ -1275,6 +1275,9 @@ let qaRegressions = []; // regression runs the verifier suggests: [{ id, at, clu
 // The ticket model (fix notes, verification, the fix queue). If the file is missing the board answers 503 instead of the launcher failing to start.
 let Tk = null;
 try { Tk = require('./bridge/tickets'); } catch (e) { console.error('Ticket module not loaded: ' + e.message); }
+// Turns a merged pull request's "### Fix note: bug_..." sections into fix notes on the tickets. Optional: without it merges work as before.
+let FixNote = null;
+try { FixNote = require('./bridge/fixnote'); } catch (e) { console.error('Fix-note module not loaded: ' + e.message); }
 
 function loadQaData() {
   try {
@@ -1503,6 +1506,20 @@ async function ghGetPR(repo, prNumber) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.message || 'GitHub PR fetch failed');
   return data;
+}
+// After a merge: if the pull request's description carries fix notes ("### Fix note: bug_..."), record them on those tickets with the merge commit as the fix,
+// and let Vera look at them. Best effort: the caller catches every failure, because a note that cannot be recorded must never undo or hide a merge.
+async function recordMergeFixNotes(repoKey, repo, prNumber, sha) {
+  const pr = await ghGetPR(repo, prNumber);
+  if (!/fix note\s*:\s*bug_/i.test(pr.body || '')) return 0;
+  const diff = await ghGetDiff(repo, prNumber);
+  const out = FixNote.recordFromMerge({ tickets: qaBugs, Tk, body: pr.body, diff, sha: String(sha || ''), repoKey });
+  if (out.recorded.length) {
+    saveQaData();
+    for (const r of out.recorded) { try { if (bridgeRoutes && bridgeRoutes.verifier) bridgeRoutes.verifier.sweep({ only: r.ticketId }); } catch (e) { /* the nightly sweep will find it */ } }
+  }
+  addLog('bridge', 'PR #' + prNumber + ' fix notes: ' + out.recorded.length + ' recorded, ' + out.skipped.length + ' skipped', 'info');
+  return out.recorded.length;
 }
 // GitHub itself is the durable, host-independent record of every real merge -
 // devconsole-log.jsonl is a local, gitignored file that only exists on
@@ -1754,6 +1771,12 @@ const server = http.createServer((req, res) => {
       if (p === '/api/qa/bugs/verify') {
         const t = bug(); if (!t) return missing();
         const c = Tk.addVerification(t, { ...b, by: b.by || 'Owner', role: 'Owner', method: 'manual' }); saveQaData();
+        return qaJson(200, { ok: true, comment: c, bug: Tk.fullView(t) });
+      }
+      if (p === '/api/qa/bugs/recheck') {
+        const t = bug(); if (!t) return missing();
+        const c = Tk.requestRecheck(t, b); saveQaData();
+        if (bridgeRoutes && bridgeRoutes.verifier) { try { bridgeRoutes.verifier.sweep({ only: t.id, priority: 3 }); } catch (e) { addLog('bridge', 'verifier: ' + e.message, 'warn'); } }
         return qaJson(200, { ok: true, comment: c, bug: Tk.fullView(t) });
       }
       if (p === '/api/qa/bugs/delete') {
@@ -2063,6 +2086,9 @@ const server = http.createServer((req, res) => {
         logDevConsoleEvent({ type: 'commit', repo: repoKey, pr: prNumber, merged: result.merged, category: category || null });
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
         res.end(JSON.stringify({ ok: true, merged: result.merged }));
+        if (result.merged && Tk && FixNote && (repoKey === 'website' || repoKey === 'launcher')) {
+          recordMergeFixNotes(repoKey, repo, prNumber, result.sha).catch((e) => addLog('bridge', 'fix notes from PR #' + prNumber + ': ' + e.message, 'warn'));
+        }
         if (repoKey === 'launcher') {
           // Pull the merge locally and exit - listener_service.bat's retry
           // loop relaunches this process fresh with the new code, same

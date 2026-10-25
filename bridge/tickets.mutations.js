@@ -14,7 +14,7 @@ module.exports = [
   ['"unsure" reopens the ticket', 'tickets.js', "if (v.result === 'failed') bug.status = 'open';", "if (v.result !== 'verified') bug.status = 'open';"],
   ['"failed" does not reopen the ticket', 'tickets.js', "if (v.result === 'failed') bug.status = 'open';", ''],
   ['the public list shows the whole fix note', 'tickets.js', 'fix: fix ? { rev: fix.rev, repo: fix.repo, commit: fix.commit, commitUrl: fix.commitUrl, by: fix.by, at: fix.at } : null,', 'fix: fix,'],
-  ['a verifier is asked about a fix it already judged', 'tickets.js', "return !(b.comments || []).some((c) => c.kind === 'verification' && c.verification && c.verification.by === by && c.verification.fixRev === b.fixRev);", 'return true;'],
+  ['a verifier is asked about a fix it already judged', 'tickets.js', "return b.status === 'open' ? asked : (lastVerdict < 0 || asked);", "return b.status === 'open' ? asked : true;"],
   ['a reopened ticket is not shown as reopened', 'tickets.js', "if (b.status === 'open' && current && v.result === 'failed') return 'reopened';", ''],
   ['a won\'t-fix ticket is still in the queue', 'tickets.js', "if (b.status === 'wontfix') return 'closed';", ''],
   ['an edit accepts any status', 'tickets.js', "if (has('status') && STATUSES.includes(src.status))", "if (has('status'))"],
@@ -42,7 +42,7 @@ module.exports = [
   ['a failed attempt is retried at once', 'verifier.js', 'taskio.recent(now() - 12 * 3600000,', 'taskio.recent(now() - 0,'],
   ['a fix she already verified is checked again', 'verifier.js', '.filter((b) => (!only || b.id === only) && T.needsVerification(b, NAME));', ".filter((b) => (!only || b.id === only) && b.status === 'fixed');"],
   ['an answer for an old fix revision is recorded', 'verifier.js', 'bug.fixRev !== Number(m[2]) ||', 'false ||'],
-  ['the files are not checked again when the answer arrives', 'verifier.js', 'combine(st, parseVerdict(task.result && task.result.text))', 'combine({ checks: [], hardFail: false, softFail: false, weak: false }, parseVerdict(task.result && task.result.text))'],
+  ['the files are not checked again when the answer arrives', 'verifier.js', 'combine(st, parseVerdict(task.result && task.result.text), { viaMerge:', 'combine({ checks: [], hardFail: false, softFail: false, weak: false }, parseVerdict(task.result && task.result.text), { viaMerge:'],
   ['she acts on anyone\'s finished task', 'verifier.js', 'if (!task || task.handler !== HANDLER) return false;', 'if (!task) return false;'],
   ['a fix-time check waits for the night window', 'verifier.js', "source: priority > 0 ? 'bridge' : 'routine'", "source: 'routine'"],
   ['a regression run can be any size', 'verifier.js', 'const n = Math.min(10, Math.max(5, Math.round(pick.list.length * 0.3)));', 'const n = Math.min(20, Math.max(1, Math.round(pick.list.length * 0.3)));'],
@@ -53,6 +53,17 @@ module.exports = [
   ['cases behind a recent fix are not picked first', 'verifier.js', '[linked.has(c.id) ? 0 : 1, prioOf(c),', '[1, prioOf(c),'],
   ['a recent fix does not make its feature likelier', 'verifier.js', 'if (hit) { w += hit; fixes++; }', 'if (hit) { fixes++; }'],
   ['a feature picked yesterday is as likely as one never picked', 'verifier.js', 'const quiet = lastPicked(id) ? Math.min(2, (now() - lastPicked(id)) / (28 * DAY)) : 2;', 'const quiet = 2;'],
+
+  // ── notes from a merge, and asking again ──
+  ['asking for a new check changes nothing', 'tickets.js', 'const asked = lastAsk > lastVerdict;', 'const asked = false;'],
+  ['a reopened ticket is looked at again every night', 'tickets.js', "return b.status === 'open' ? asked : (lastVerdict < 0 || asked);", "return b.status === 'open' ? true : (lastVerdict < 0 || asked);"],
+  ['a won\'t-fix ticket can be asked about', 'tickets.js', "if (bug.status === 'wontfix') throw new Error(\"this ticket is marked won't fix\");", ''],
+  ['a ticket with no fix note can be asked about', 'tickets.js', "if (!(bug.fixRev > 0)) throw new Error('this ticket has no fix note to check');", ''],
+  ['a confirmed fix leaves the ticket open', 'tickets.js', "else if (v.result === 'verified' && bug.status === 'open') bug.status = 'fixed';", ''],
+  ['any truthy value marks a note as from a merge', 'tickets.js', 'viaMerge: i.viaMerge === true,', 'viaMerge: !!i.viaMerge,'],
+  ['a merged fix that this PC does not have yet reopens the ticket', 'verifier.js', 'if (st.hardFail && opts.viaMerge) return {', 'if (false) return {'],
+  ['notes from a merge are not marked as such', 'fixnote.js', 'viaMerge: true, by, role } });', 'by, role } });'],
+  ['one bad section stops the notes after it', 'fixnote.js', 'catch (e) { skipped.push({ ticket: ticketId, reason: e.message }); }', 'catch (e) { throw e; }'],
 
   // ── the glue: who may trigger her, which routines she has, which lane she is on ──
   ['a routine for a cloud-lane area runs as an action', 'routines.js', "if (r.kind === 'action' && lane !== 'local') {", 'if (false) {'],

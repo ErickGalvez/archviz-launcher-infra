@@ -134,6 +134,38 @@ test('a verifier is asked only for fixed tickets with a note, never twice for th
   assert.equal(T.needsVerification(u, 'Vera'), false);                                        // "unsure" waits for a human, it does not loop every night
 });
 
+// ── notes from a merge, and "check again" ──
+test('a note recorded from a merged pull request is marked as such, and only when the caller says exactly true', () => {
+  assert.equal(T.addFix(fresh(), { ...FIX, viaMerge: true }, { now: NOW }).fix.viaMerge, true);
+  assert.equal(T.addFix(fresh(), FIX, { now: NOW }).fix.viaMerge, false);
+  assert.equal(T.addFix(fresh(), { ...FIX, viaMerge: 'yes' }, { now: NOW }).fix.viaMerge, false);
+});
+test('a check can be asked for again: only a fixed note, never on a won\'t-fix ticket, and it is recorded in the thread', () => {
+  const b = fresh();
+  throwsMsg(() => T.requestRecheck(b, { by: 'Erick' }, { now: NOW }), /no fix note/);
+  T.addFix(b, FIX, { now: NOW });
+  const c = T.requestRecheck(b, { by: 'Erick' }, { now: NOW });
+  assert.equal(c.kind, 'recheck'); assert.equal(c.fixRev, 1); assert.equal(c.by, 'Erick'); assert.ok(b.comments.includes(c));
+  T.patch(b, { status: 'wontfix' }, { now: NOW }); throwsMsg(() => T.requestRecheck(b, { by: 'x' }, { now: NOW }), /won't fix/);
+});
+test('asking again is the one way the same revision is checked twice: after the verdict, and only for that revision', () => {
+  const b = fresh(); T.addFix(b, FIX, { now: NOW });
+  T.addVerification(b, { result: 'unsure', fixRev: 1, by: 'Vera' }, { now: NOW });
+  assert.equal(T.needsVerification(b, 'Vera'), false);
+  T.requestRecheck(b, { by: 'Erick' }, { now: NOW }); assert.equal(T.needsVerification(b, 'Vera'), true);
+  T.addVerification(b, { result: 'unsure', fixRev: 1, by: 'Vera' }, { now: NOW }); assert.equal(T.needsVerification(b, 'Vera'), false, 'the new verdict answers the request');
+  const o = fresh(); T.addFix(o, FIX, { now: NOW }); T.requestRecheck(o, { by: 'Erick' }, { now: NOW }); T.addVerification(o, { result: 'verified', fixRev: 1, by: 'Vera' }, { now: NOW });
+  T.addFix(o, FIX, { now: NOW }); T.addVerification(o, { result: 'verified', fixRev: 2, by: 'Vera' }, { now: NOW });
+  assert.equal(T.needsVerification(o, 'Vera'), false, 'a request for revision 1 does not trigger a check of revision 2');
+});
+test('a reopened ticket is checked again only when someone asks, and a confirmed fix puts it back to fixed', () => {
+  const b = fresh(); T.addFix(b, FIX, { now: NOW }); T.addVerification(b, { result: 'failed', fixRev: 1, by: 'Vera' }, { now: NOW });
+  assert.equal(b.status, 'open'); assert.equal(T.needsVerification(b, 'Vera'), false);
+  T.requestRecheck(b, { by: 'Erick' }, { now: NOW }); assert.equal(T.needsVerification(b, 'Vera'), true);
+  T.addVerification(b, { result: 'verified', fixRev: 1, by: 'Vera' }, { now: NOW });
+  assert.equal(b.status, 'fixed'); assert.equal(T.queueState(b), 'verified');
+});
+
 // ── what leaves without the key ──
 test('without the QA key a ticket shows counts and the commit link, but no thread, root cause or code', () => {
   const b = fresh(); T.addFix(b, FIX, { now: NOW }); T.addVerification(b, { result: 'verified', fixRev: 1, by: 'Vera', summary: 'secret detail', checks: [{ name: 'x', ok: true, detail: 'y' }] }, { now: NOW });

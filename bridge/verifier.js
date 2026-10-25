@@ -133,10 +133,12 @@ function parseVerdict(text) {
 }
 
 // Static result + (optional) model verdict -> what goes on the ticket. See the header for what each outcome means.
-function combine(st, model) {
+function combine(st, model, opts = {}) {
   const asChecks = (st.checks || []).map((c) => ({ name: c.name, ok: c.ok, detail: c.detail }));
   const list = (cs) => cs.map((c) => c.name + (c.detail ? ' (' + c.detail + ')' : '')).join('; ');
   if (st.skipped) return { result: 'unsure', method: 'static', checks: asChecks, summary: 'I could not check this in code: ' + st.skipped + '. Please look at it by hand.' };
+  // A note recorded from a merged pull request can be ahead of the checkout on this PC (nobody has pulled yet): that is not proof the fix is missing.
+  if (st.hardFail && opts.viaMerge) return { result: 'unsure', method: 'static', checks: asChecks, summary: 'This fix note was recorded from a merged pull request, and the checkout on this PC does not show it yet (' + list(st.checks.filter((c) => c.hard && c.ok === false)) + '). Pull the repository on this PC, then ask me to check again.' };
   if (st.hardFail) return { result: 'failed', method: 'static', checks: asChecks, summary: 'The fix is not in the code as the note describes it. Failed: ' + list(st.checks.filter((c) => c.hard && c.ok === false)) + '. Reopened; record a new fix note when it is really in.' };
   if (st.weak) return { result: 'unsure', method: 'static', checks: asChecks, summary: 'The fix note has no code snippet, so I only confirmed that the files exist. Add the changed lines to the note so I can check them.' };
   if (!model) return { result: 'unsure', method: 'static', checks: asChecks, summary: 'The static checks passed but the model review did not run.' };
@@ -168,7 +170,7 @@ function createVerifier({ tickets, taskio, getCases = () => [], regressions = { 
       if (active.length || failedLately.length) { out.skipped++; continue; }
       const st = staticChecks(b.fix, rootsOf());
       if (st.skipped || st.hardFail || st.weak) {
-        const v = combine(st, null);
+        const v = combine(st, null, { viaMerge: !!(b.fix && b.fix.viaMerge) });
         if (record(b, v)) { out.recorded++; note('Verification ' + v.result + ': ' + b.title.slice(0, 90), v.summary.slice(0, 700), b.id); }
         continue;
       }
@@ -188,7 +190,7 @@ function createVerifier({ tickets, taskio, getCases = () => [], regressions = { 
     const bug = m && tickets.get(m[1]);
     if (!bug || bug.fixRev !== Number(m[2]) || !T.needsVerification(bug, NAME)) { log('dropped a stale verification for ' + (task.ref || '?')); return false; }
     const st = staticChecks(bug.fix, rootsOf());
-    return record(bug, combine(st, parseVerdict(task.result && task.result.text)));
+    return record(bug, combine(st, parseVerdict(task.result && task.result.text), { viaMerge: !!(bug.fix && bug.fix.viaMerge) }));
   }
 
   // ── regression picks ──

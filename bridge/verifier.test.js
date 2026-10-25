@@ -192,6 +192,32 @@ const store = (list) => ({ list: () => list, get: (id) => list.find((b) => b.id 
     assert.equal(one.v.sweep({ only: many[0].id }).queued, 1);
   });
 
+  console.log('notes from a merge, and asking again');
+  const doneOf = (b, text) => ({ id: 'tk_x', handler: 'verify', ref: b.id + '@' + b.fixRev, status: 'done', result: { text } });
+  await test('a note recorded from a merge whose code this PC does not have yet is "unsure", not a failure: the checkout may simply be behind', () => {
+    const w = mk({ website: repo({ 'archviz/app.js': 'nothing here\n' }) }), b = fixedTicket({ viaMerge: true }); w.list.push(b);
+    w.v.sweep();
+    assert.equal(b.verification.result, 'unsure'); assert.equal(b.status, 'fixed'); assert.match(b.verification.summary, /Pull the repository/); assert.equal(T.queueState(b), 'unsure');
+    const hand = mk({ website: repo({ 'archviz/app.js': 'nothing here\n' }) }), c = fixedTicket(); hand.list.push(c);
+    hand.v.sweep(); assert.equal(c.verification.result, 'failed', 'the same missing code on a note written by hand is still a failure');
+  });
+  await test('after the checkout is brought up to date, "check again" gives a real verdict on the same revision', () => {
+    const root = repo({ 'archviz/app.js': 'nothing here\n' }), w = mk({ website: root }), b = fixedTicket({ viaMerge: true }); w.list.push(b);
+    w.v.sweep(); assert.equal(b.verification.result, 'unsure'); assert.equal(w.v.sweep().considered, 0, 'nothing happens by itself');
+    fs.writeFileSync(path.join(root, 'archviz/app.js'), FILE);
+    T.requestRecheck(b, { by: 'Erick' }, { now: NOW });
+    assert.equal(w.v.sweep({ only: b.id, priority: 3 }).queued, 1);
+    w.v.handleDone(doneOf(b, 'VERDICT: VERIFIED\nREASON: Pointer events are used.'));
+    assert.equal(b.verification.result, 'verified'); assert.equal(b.comments.filter((c) => c.kind === 'verification').length, 2);
+  });
+  await test('a reopened ticket whose code is now in the file is fixed again after "check again"', () => {
+    const root = repo({ 'archviz/app.js': 'nothing here\n' }), w = mk({ website: root }), b = fixedTicket(); w.list.push(b);
+    w.v.sweep(); assert.equal(b.status, 'open');
+    fs.writeFileSync(path.join(root, 'archviz/app.js'), FILE); T.requestRecheck(b, { by: 'Erick' }, { now: NOW });
+    w.v.sweep({ only: b.id }); w.v.handleDone(doneOf(b, 'VERDICT: VERIFIED\nREASON: ok'));
+    assert.equal(b.status, 'fixed'); assert.equal(T.queueState(b), 'verified');
+  });
+
   console.log('the answer comes back');
   const done = (b, text, over) => ({ id: 'tk_x', handler: 'verify', ref: b.id + '@' + b.fixRev, status: 'done', result: { text }, ...over });
   await test('a VERIFIED answer on a fix that is in the code verifies the ticket', () => {
