@@ -627,6 +627,31 @@ let currentTurn = null;    // {id, name, status: 'confirming'|'active', deadline
 let turnTimer = null;
 const lastJoinByIP = new Map();
 
+// ── UPDATE & RESTART — the admin panel's button (updater.js) ──
+// Tells how many changes are ahead of the code this process started with, and pulls + restarts on request. The panel's two routes are on the admin-key
+// list further down. The exit is the same self-healing pattern as the Dev Console merge below: listener_service.bat relaunches this process in ~5 s.
+function runCmd(cmd, args, { cwd = BAT_DIR, timeout = 20000, env } = {}) {
+  return new Promise((resolve) => {
+    let out = '', err = '', done = false, child;
+    const finish = (code) => { if (done) return; done = true; clearTimeout(t); resolve({ code, stdout: out, stderr: err }); };
+    try { child = spawn(cmd, args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env }, windowsHide: true }); }   // fixed argument lists only, never anything from a request
+    catch (e) { return resolve({ code: -1, stdout: '', stderr: e.message }); }
+    const t = setTimeout(() => { try { child.kill(); } catch (e) { /* already gone */ } finish(-2); }, timeout);
+    child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => { err += e.message; finish(-1); });
+    child.on('close', (code) => finish(code));
+  });
+}
+let Up = null;
+try { Up = require('./updater.js'); } catch (e) { console.error('Updater not loaded: ' + e.message); }
+const updateBusy = () => (lastPSStatus !== 'stopped' ? 'a client session is running' : currentTurn || lobbyQueue.length ? 'visitors are in the queue or in a turn' : room.participants.size ? 'someone is in the room' : null);
+const updater = Up ? Up.createUpdater({
+  run: runCmd, dir: BAT_DIR, busy: updateBusy,
+  restart: () => { addLog('lobby', 'Admin panel: update applied, restarting the launcher.', 'info'); process.exit(0); },
+  log: (m) => addLog('lobby', 'Admin panel: ' + m, 'info'),
+}) : null;
+if (updater) updater.start();
+
 // ── SESSION LOG — durable record of who connected, on what, and how the
 // launch actually went. Requested after a real iOS visit couldn't be
 // diagnosed: the backend already tracked launch success/timing, but never
@@ -1628,7 +1653,7 @@ const server = http.createServer((req, res) => {
   // UE5/Wilbur pair before relaunching, so left open, anyone on the internet
   // could cut a live visitor's session off with one request. The public flow
   // never calls it over HTTP - startTurn() calls launchPS() directly.
-  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set'];
+  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set', '/api/update/status', '/api/update/apply'];
   if (ADMIN_ROUTES.includes(parsedUrl.pathname) && !isAdmin(req, parsedUrl)) {
     res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
@@ -2715,6 +2740,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // The panel's Update & restart: how far behind this process is, and the action. Both need the admin key (ADMIN_ROUTES).
+  if (parsedUrl.pathname === '/api/update/status' && req.method === 'GET') {          // pathname, not url: the panel asks with ?fresh=1
+    if (!updater) { res.writeHead(503, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'The updater is not loaded on this host (updater.js).' })); return; }
+    updater.check({ fresh: parsedUrl.searchParams.get('fresh') === '1' }).then((info) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ...info, busy: info.ok ? updateBusy() : null }));
+    }).catch((e) => { res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: String(e && e.message || e).slice(0, 160) })); });
+    return;
+  }
+  if (parsedUrl.pathname === '/api/update/apply' && req.method === 'POST') {
+    if (!updater) { res.writeHead(503, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'The updater is not loaded on this host (updater.js).' })); return; }
+    readJsonBody(req).then((b) => updater.apply({ force: !!b && b.force === true, restart: !b || b.restart !== false })).then((r) => {
+      res.writeHead(r.ok ? 200 : r.busy ? 409 : 400, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify(r));
+    }).catch((e) => { res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: String(e && e.message || e).slice(0, 160) })); });
+    return;
+  }
+
   if (url === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({
@@ -2755,8 +2797,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  res.writeHead(404);
+  // With the CORS headers on purpose: a route this build does not have (an old launcher, a bridge that failed to load) must reach a page as a 404 it can explain,
+  // not as a blocked response that every page reports as "can't reach the launcher API".
+  res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
   res.end('Not found');
+});
+
+// If the port cannot be taken (the previous process still holds it for a moment after a restart), exit: listener_service.bat relaunches in 5 seconds and tries again.
+// Left to the catch-all below, the process stayed alive with nothing listening - a launcher that looked up and answered nobody (the API returned 503 until it was killed by hand).
+server.on('error', (err) => {
+  if (err && (err.code === 'EADDRINUSE' || err.code === 'EACCES')) {
+    console.error('[Server] Cannot listen on port ' + PORT + ' (' + err.code + '): exiting so the watchdog starts it again.');
+    setTimeout(() => process.exit(1), 500);
+  } else console.error('[Server] Server error:', err && err.message);
 });
 
 server.listen(PORT, () => {

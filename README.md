@@ -78,6 +78,17 @@ Chrome or Edge recommended. No plugins needed. The stream starts automatically.
 
 ---
 
+## Updating and restarting the launcher
+
+The admin panel (`http://localhost:3000`, local only) has a **Launcher software** box under the log. It says how many changes are ahead of the code this launcher started with
+(whether they were pushed from another PC or committed in this checkout), lists their titles, and says whether the launcher itself changed. The button then reads
+**Update & restart (N)**, **Update (N, no restart needed)** for tests/docs-only changes, or **Restart launcher** when nothing is new.
+
+- It pulls fast-forward only, checks that the new `launcher-server.js` and the bridge load, and rolls the pull back (no restart) if they do not.
+- A running stream, a turn, a queue or someone in the room blocks it; the panel asks before cutting that off.
+- It exits the process and `listener_service.bat` relaunches it about 5 seconds later. The panel does not reload itself afterwards (loading the panel starts a stream).
+- Needs the admin key (`/api/update/status`, `/api/update/apply`). Tests: `node updater.test.js` (real git, 21 checks), `node updater.mutation.js`.
+
 ## Stopping the stream
 
 - Close the UE5 window (or the command prompt titled "UE5 PixelStream")

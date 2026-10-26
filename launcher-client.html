@@ -88,6 +88,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:1
 .reset-btn{font-size:10px;font-family:var(--mono);letter-spacing:0.08em;text-transform:uppercase;padding:4px 12px;cursor:pointer;border:0.5px solid var(--border);border-radius:4px;background:transparent;color:var(--text-dimmer);transition:all 0.15s;}
 .reset-btn:hover{border-color:var(--border-h);color:var(--text);}
 
+/* Update & restart: what is ahead of the running launcher, and the button that pulls it and restarts */
+.update-box{background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:12px 14px;margin:14px 0;}
+.update-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.update-title{font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-dimmer);}
+.update-state{font-size:12px;color:var(--text);}
+.update-state.ahead{color:var(--gold);} .update-state.warn{color:var(--red);} .update-state.ok{color:var(--green);}
+.update-lines{list-style:none;margin:8px 0 0;font-size:10.5px;line-height:1.7;color:var(--text-dim);max-height:150px;overflow:auto;}
+.update-lines li{padding-left:10px;border-left:1px solid var(--border);overflow-wrap:anywhere;}
+.update-actions{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;}
+.update-btn{font-family:var(--mono);font-size:11px;letter-spacing:0.06em;text-transform:uppercase;padding:7px 14px;cursor:pointer;border:0.5px solid var(--gold);border-radius:4px;background:var(--gold-dim);color:var(--gold);transition:all 0.15s;}
+.update-btn:hover:not(:disabled){background:rgba(147,216,199,0.2);}
+.update-btn:disabled{opacity:0.4;cursor:default;}
+.update-note{font-size:10px;color:var(--text-dimmer);}
+
 .toggle-wrap { position:relative; display:inline-flex; align-items:center; cursor:pointer; }
 .toggle-wrap input { display:none; }
 .toggle-track { width:32px; height:18px; background:rgba(255,255,255,0.08); border:0.5px solid var(--border-h); border-radius:99px; position:relative; transition:background 0.2s; }
@@ -178,6 +192,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:1
 
   <div class="log" id="log">
     <div class="log-line"><span class="log-time">--:--:--</span><span class="log-info">Connecting to launcher server…</span></div>
+  </div>
+
+  <div class="update-box" id="update-box">
+    <div class="update-head"><span class="update-title">Launcher software</span><span class="update-state" id="update-headline">Checking for updates…</span></div>
+    <ul class="update-lines" id="update-lines"></ul>
+    <div class="update-actions">
+      <button class="update-btn" id="update-btn" onclick="applyUpdate()" disabled>Update &amp; restart</button>
+      <button class="reset-btn" id="update-check" onclick="checkUpdate(true)">Check now</button>
+      <span class="update-note" id="update-note"></span>
+    </div>
   </div>
 
   <div class="footer">
@@ -436,6 +460,44 @@ async function resetAll() {
   document.getElementById('log').innerHTML =
     '<div class="log-line"><span class="log-time">--:--:--</span><span class="log-info">Reset — ready to launch.</span></div>';
 }
+
+// ── Update & restart ──
+// Says how many changes are ahead of the running launcher (commit titles come from GitHub: they are only ever written with textContent), and one button
+// that pulls them and restarts. It never reloads this page afterwards: loading it starts a stream (see the auto-start below), which an update must not do.
+let updateInfo = null, updateWorking = false;
+const upEl = (id) => document.getElementById(id);
+function renderUpdate() {
+  const i = updateInfo, d = i && i.legend ? i.legend : { level: 'warn', headline: (i && i.error) || 'Could not check for updates.', lines: [] };
+  const head = upEl('update-headline'); head.textContent = d.headline; head.className = 'update-state ' + d.level;
+  const ul = upEl('update-lines'); ul.textContent = '';
+  d.lines.forEach((l) => { const li = document.createElement('li'); li.textContent = l; ul.appendChild(li); });
+  const ok = !!(i && i.ok && !i.diverged), ahead = ok ? (i.ahead || 0) : 0, btn = upEl('update-btn');
+  btn.disabled = !ok || updateWorking;
+  btn.textContent = !ok ? 'Update & restart' : ahead > 0 ? (i.needsRestart ? 'Update & restart (' + ahead + ')' : 'Update (' + ahead + ', no restart needed)') : 'Restart launcher';
+  upEl('update-note').textContent = ok && i.busy ? 'Right now: ' + i.busy + '. It will ask before cutting that off.' : '';
+}
+async function checkUpdate(fresh) {
+  try { updateInfo = await (await fetch('/api/update/status' + (fresh ? '?fresh=1' : ''), { headers: { 'X-Admin-Key': ADMIN_KEY } })).json(); }
+  catch (e) { updateInfo = { ok: false, error: 'Could not reach the launcher: ' + e.message }; }
+  renderUpdate();
+}
+async function applyUpdate(force) {
+  const i = updateInfo; if (!i || !i.ok || updateWorking) return;
+  const ahead = i.ahead || 0, restart = ahead === 0 || !!i.needsRestart;
+  if (i.busy && !force && !confirm('Right now: ' + i.busy + '.\n\nRestarting cuts that off. Continue anyway?')) return;
+  updateWorking = true; renderUpdate(); upEl('update-headline').textContent = ahead ? 'Updating…' : 'Restarting…';
+  let r; try { r = await (await fetch('/api/update/apply', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY }, body: JSON.stringify({ force: !!(force || i.busy), restart }) })).json(); } catch (e) { r = { ok: false, error: e.message }; }
+  if (!r.ok) { updateWorking = false; addLog({ ts: ts(), msg: 'Update: ' + (r.error || 'failed'), type: 'err' }); await checkUpdate(true); return; }
+  addLog({ ts: ts(), msg: 'Update: ' + (r.changes ? r.changes + ' change(s) ready, ' : '') + (r.restarting ? 'restarting the launcher…' : 'no restart needed.'), type: 'ok' });
+  if (r.restarting) {
+    upEl('update-headline').textContent = 'Restarting… (about 10 seconds)';
+    const t0 = Date.now(); await new Promise((res) => setTimeout(res, 3000));
+    while (Date.now() - t0 < 60000) { try { if ((await fetch('/api/status', { cache: 'no-store' })).ok) break; } catch (e) { /* still down */ } await new Promise((res) => setTimeout(res, 1500)); }
+  }
+  updateWorking = false; await checkUpdate(true);
+  if (r.restarting) addLog({ ts: ts(), msg: 'Launcher is back' + (updateInfo && updateInfo.running ? ': running ' + updateInfo.running : '') + '.', type: 'ok' });
+}
+checkUpdate(false); setInterval(() => { if (!updateWorking) checkUpdate(false); }, 120000);
 
 connectSSE();
 

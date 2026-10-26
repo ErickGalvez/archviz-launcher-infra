@@ -36,7 +36,7 @@ nothing is dropped and nothing falls back to the cloud.
 | | Night (00:00–07:00 Mexico City) | Day |
 |---|---|---|
 | **Local model** | Kept loaded on every PC that isn't rendering | Loaded on demand, unloaded after 15 idle minutes |
-| **Routine tasks** | Run (each routine once per night, weekly ones once a week) | Wait for the night |
+| **Routine tasks** | Run (each routine once per night, weekly ones once a week) | Wait for the night, **unless a PC is idle**: online, not rendering, not reserved and under 20% GPU (`"idleRun": { "enabled": true, "gpuPct": 20 }` in `bridge.json`); then they run at once, still once per night |
 | **Tasks you ask for** (Task-IO → *Ask a role*) | Run | Run (model loads first if needed) |
 | **A client starts a session on a PC** | That PC unloads its model before UE5 starts; the other PC carries on | same |
 
@@ -84,6 +84,13 @@ commit, and merging a pull request from the Dev Console records its "### Fix not
 ```json
 { "verify": { "roots": { "website": "Y:\\ArchVizChallenge\\Local_Archviz_GITHUB\\ARCHVIZ", "app": "Y:\\ArchVizChallenge\\G741Launcher" } } }
 ```
+
+## Reports and the Files room
+
+A **report** is a named set of tickets filed together (a test run's findings, a triage, an audit) with a stamp: **new**, **working**, **closed**. `bridge/reports.js` is the model and
+`/api/qa/reports` (QA key or Dev Console key) the routes; reports are saved with the tickets in `qa-data.json`. Stamping *working* moves the open tickets to In progress; *closed* marks the
+ones still open or in progress as fixed (by hand: the board shows "fixed, no fix note") and refuses to overrule a ticket Vera failed unless it is forced; going back to *working* re-opens only
+what was closed by hand. In the Virtual Team page the **Files** room (front-right corner of the office) shows them as binders, a desk with two stamps, and the **ISSUES DB** cabinet.
 
 ## Security model (read this once)
 
@@ -181,6 +188,8 @@ node bridge/nightly.test.js       # 7 checks: the one-off cloud-lane nightly aga
 node bridge/tickets.test.js       # 22 checks: the ticket model, fix notes, verdicts, the fix queue, what is private
 node bridge/verifier.test.js      # 40 checks: Vera's static checks, the model's answer, never-twice, regression picks
 node bridge/fixnote.test.js       # 12 checks: diffs and pull request notes become fix notes
+node bridge/reports.test.js       # 10 checks: reports (a set of tickets + a Working/Closed stamp that moves them)
+node updater.test.js              # 21 checks: the admin panel's Update & restart, against real git (in the launcher folder, not bridge/)
 node bridge/bridge.mutation.js    # breaks 102 protections one at a time and requires the tests to notice (ONLY="text" runs a subset)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
