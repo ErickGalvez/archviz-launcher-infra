@@ -10,10 +10,15 @@
 //      and the task waits until it is up.
 //   5. Routine (scheduled) tasks run inside the nightly window, or at any other time on a PC that is idle (online, not rendering,
 //      not reserved, GPU under the idle threshold - see hub.idleEnough). Owner-requested tasks run any time.
+//   5b. A task with job.pin === 'local' (the Archivist) only ever runs on the launcher's own PC, and only if that PC has the Archivist enabled.
 //   6. If the PC a task is running on starts rendering, goes offline or loses its model, the task goes back in the queue
 //      and runs on the other PC. A genuine error counts as an attempt; three attempts and it is marked failed.
 const MAX_ATTEMPTS = 3;
 const RETRYABLE = /^rendering:|llm_unavailable|offline|unloaded|ECONN|fetch failed|timed out|no such job/i;
+// An error that waiting will not fix: the folder is not allowed, does not exist, the Archivist is off. The task fails with the reason instead of retrying every few seconds.
+const PERMANENT = /^archive:|allowed list|does not exist|cannot be read|is a file|full local path|bad run id|params\.path|the Archivist is not enabled|only on the launcher PC/i;
+// One line for the Devices and Task-IO pages: what the Archivist is doing right now.
+const progressLine = (p) => (p ? ({ walking: 'Looking through the folder…', hashing: 'Comparing files for duplicates ' + (p.done || 0) + '/' + (p.total || 0), reading: 'Reading files ' + (p.done || 0) + '/' + (p.total || 0) + (p.current ? ' · ' + String(p.current).slice(-60) : ''), folders: 'Sorting folders of unread files ' + (p.done || 0) + '/' + (p.total || 0), grouping: 'Grouping into projects…' }[p.phase] || '') : '');
 
 // onDone(task) is called once a local task has finished with a result (a role such as Vera turns the answer into something: a verdict on a ticket).
 function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = () => {}, maxAttempts = MAX_ATTEMPTS, onDone = () => {} }) {
@@ -35,6 +40,7 @@ function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = ()
     try { r = await hub.jobOn(d.id, t.remote && t.remote.jobId); } catch (e) { if (RETRYABLE.test(e.message)) return requeue(t, alias(d) + ' lost the job (' + e.message + '); retrying'); return; }
     if (!r.ok) return requeue(t, r.error);
     const j = r.job;
+    if (j.status === 'running' && j.progress) { const line = progressLine(j.progress); if (line && line !== t.detail) taskio.patchTask(t.id, { detail: line }); }
     if (j.status === 'done') {
       taskio.patchTask(t.id, { status: 'done', result: { text: (j.result && j.result.text) || '', tokens: (j.result && j.result.tokens) || 0, deviceId: d.id, ms: (j.doneAt || now()) - (j.startedAt || now()) }, doneAt: now(), detail: 'Done on ' + alias(d) + '.', remote: null });
       log('done "' + t.title + '" on ' + alias(d));
@@ -60,7 +66,9 @@ function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = ()
       const waiting = [];
       for (const t of open.filter((x) => x.status === 'queued')) {
         const routine = t.source === 'routine' && !(t.priority > 0);                   // owner-requested (priority > 0) runs any time
+        const pinned = t.job && t.job.pin === 'local';
         const candidates = devs.filter((d) => hub.aiCapable(d) && !usedDevices.has(d.id)
+          && (!pinned || (d.source === 'local' && d.stats && d.stats.archive && d.stats.archive.enabled))
           && (!routine || (d.stats && d.stats.model && d.stats.model.windowActive) || hub.idleEnough(d)));
         if (!candidates.length) { waiting.push(t); continue; }
         const ready = candidates.filter((d) => hub.aiReady(d)).sort(hub.load);
@@ -71,7 +79,7 @@ function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = ()
             usedDevices.add(d.id);
             taskio.patchTask(t.id, { status: 'running', deviceId: d.id, remote: { jobId: r.jobId }, startedAt: now(), detail: 'Running on ' + alias(d) + '.' });
             log('"' + t.title + '" -> ' + alias(d));
-          } catch (e) { taskio.patchTask(t.id, { detail: 'Could not start on ' + alias(d) + ': ' + e.message }); }
+          } catch (e) { if (PERMANENT.test(e.message)) { await fail(t, e.message, d); continue; } taskio.patchTask(t.id, { detail: 'Could not start on ' + alias(d) + ': ' + e.message }); }
           continue;
         }
         // Nobody has a model loaded: ask the best candidate to load it (once per tick), and wait.

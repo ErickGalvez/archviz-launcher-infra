@@ -92,12 +92,32 @@ A **report** is a named set of tickets filed together (a test run's findings, a 
 ones still open or in progress as fixed (by hand: the board shows "fixed, no fix note") and refuses to overrule a ticket Vera failed unless it is forced; going back to *working* re-opens only
 what was closed by hand. In the Virtual Team page the **Files** room (front-right corner of the office) shows them as binders, a desk with two stamps, and the **ISSUES DB** cabinet.
 
+## The Archivist (secret department)
+
+**Mole** reads a folder of the owner's own old files, one by one, with the local Qwen model, and returns a catalog: what each file is, suggested **projects**, and
+**possible duplicates**. It is not G741 business: it has its own room under the office floor (the hatch marked S-0 in the Virtual Team page) and its own page,
+`devconsole/archive.html`, with a three.js map of the folder (one block per folder; height = size, colour = what is in it, dark = not read yet). It is a port of the FileArchive
+prototype (PyQt6 + OpenGL) to this bridge, **read-only**: it never moves, renames or deletes anything (the prototype's organizer is deliberately not ported).
+
+* **Only PC-1, only the local lane.** The task is pinned to the launcher's own PC (`job.pin = 'local'`), the `archive` area is local *and* confidential, so it can never reach PC-2 or the cloud;
+  if PC-1 is rendering a client it stops after the current file and resumes later.
+* **Off until you turn it on, and only inside folders you name.** On PC-1: `node bridge/archive-allow.js "D:\Old stuff"` (also `--list`, `--remove`, `--off`). It edits the `archive` block of
+  that PC's own `bridge-node.json`, which the agent re-reads for every request, so no restart is needed after the first time. The request cannot widen the list; links and junctions are never followed.
+* **What it never reads:** key and password files, `.env`, `.ssh`/`.aws`/wallet folders (listed by name only), and files whose *name* looks private (the page hides those names until asked).
+  Program folders (`node_modules`, `.git`, `venv`...) are skipped. Files that say G741/ArchViz are set aside as their own group.
+* **How it works:** a head sample of each text or office file (docx/xlsx/pptx/odt) goes to Qwen for `{summary, topic, project, tags}`; pictures, video, audio and 3D files are sorted per folder
+  (the model reads text, not pictures); the labels are grouped into at most 14 projects; duplicates are **exact** (sha256, only for files of the same size), **near** (simhash of the text) and
+  **versions** (`report (1).docx`, `final`, dates). A big folder is read over several slices (default 10 min); each slice that ends early leaves a continuation task, so other work gets its turn.
+* **Where it lives:** the engine is `archivist.js` (runs in the node agent), `archive.js` is the launcher side (tasks + proxy), and the catalogs are kept on PC-1 in `bridge/archive-data/` (gitignored).
+  Routes (Dev Console key): `GET /api/archive/status|runs|run?id|files?id&dir&group&kind&q`, `POST /api/archive/start|cancel|forget`.
+* **To go live:** restart the launcher once (Update & restart in the admin panel), restart the node agent once (`node bridge/node-agent.js`) so it loads `archivist.js`, then run `archive-allow.js`.
+
 ## Security model (read this once)
 
 * Every request to an agent must be signed with `bridge.key` (HMAC-SHA256 over method, path, timestamp, nonce and body).
   Wrong key, bad signature, a clock more than 60 s off, or a replayed request → a bare `401`.
-* An agent runs **two job types only**: a prompt for the local model, and an echo. It never runs commands, reads files or
-  takes code from the network. Its fixed processes are `nvidia-smi` and the **one** model command built from *this PC's own*
+* An agent runs **two job types**: a prompt for the local model, and an echo, plus a third, `archive.scan`, **only on a PC whose own config turns the Archivist on** (and only inside the
+  folders that config lists; see above). It never runs commands or takes code from the network, and reads files only in that one case. Its fixed processes are `nvidia-smi` and the **one** model command built from *this PC's own*
   `bridge-node.json`; the network can only say "start" or "stop" that model, and a stop only ever kills the process the
   agent started itself.
 * The key is created once, **never printed** (only a short fingerprint is) and **never committed**. Move it between PCs by
@@ -189,8 +209,10 @@ node bridge/tickets.test.js       # 22 checks: the ticket model, fix notes, verd
 node bridge/verifier.test.js      # 40 checks: Vera's static checks, the model's answer, never-twice, regression picks
 node bridge/fixnote.test.js       # 12 checks: diffs and pull request notes become fix notes
 node bridge/reports.test.js       # 10 checks: reports (a set of tickets + a Working/Closed stamp that moves them)
+node bridge/archivist.test.js     # 28 checks: the Archivist's engine (what it never reads, links, duplicates, projects, slices, cancel, read-only)
+node bridge/archive.test.js       # 17 checks: the launcher side (pinned to PC-1, allowed folders, render pause, continuation, routes)
 node updater.test.js              # 21 checks: the admin panel's Update & restart, against real git (in the launcher folder, not bridge/)
-node bridge/bridge.mutation.js    # breaks 102 protections one at a time and requires the tests to notice (ONLY="text" runs a subset)
+node bridge/bridge.mutation.js    # breaks 189 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive or GROUP=tickets one list)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
 
@@ -202,4 +224,4 @@ page served from `localhost`:
 ## Files that must stay out of git (already in `.gitignore`)
 
 `bridge/bridge.key` · `bridge/bridge-node.json` · `bridge.json` · `bridge/bridge.json` · `bridge/bridge-node-state.json` · `bridge-aliases.json` ·
-`bridge-reserved.json` · `routines-state.json` · `taskio-tasks.jsonl` · `taskio-eod.jsonl` · `bridge/dl|llama|models/`
+`bridge-reserved.json` · `routines-state.json` · `taskio-tasks.jsonl` · `taskio-eod.jsonl` · `bridge/dl|llama|models/` · `bridge/archive-data/` (the Archivist's catalogs of private files)

@@ -509,9 +509,9 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
   await test('the bundle for a second PC has everything it needs, the shared key, a fresh identity, and refuses a non-empty folder', () => {
     const src = tmp(), key = path.join(src, 'bridge.key');
     P.createKeyFile(key);
-    for (const f of ['node-agent.js', 'protocol.js', 'model-supervisor.js', 'schedule.js', 'start-node.bat', 'join.bat', 'join.ps1']) fs.copyFileSync(path.join(__dirname, f), path.join(src, f));
+    for (const f of ['node-agent.js', 'protocol.js', 'model-supervisor.js', 'schedule.js', 'archivist.js', 'start-node.bat', 'join.bat', 'join.ps1']) fs.copyFileSync(path.join(__dirname, f), path.join(src, f));
     const out = path.join(tmp(), 'bundle'), r = exportBundle(src, key, out);
-    for (const f of ['node-agent.js', 'protocol.js', 'model-supervisor.js', 'schedule.js', 'join.bat', 'join.ps1', 'bridge.key', 'bridge-node.json', 'README-PC2.txt']) assert.ok(fs.existsSync(path.join(out, f)), f);
+    for (const f of ['node-agent.js', 'protocol.js', 'model-supervisor.js', 'schedule.js', 'archivist.js', 'join.bat', 'join.ps1', 'bridge.key', 'bridge-node.json', 'README-PC2.txt']) assert.ok(fs.existsSync(path.join(out, f)), f);
     assert.equal(P.loadKey(path.join(out, 'bridge.key')), P.loadKey(key)); assert.equal(r.fingerprint, P.fingerprint(P.loadKey(key)));
     const cfg = JSON.parse(fs.readFileSync(path.join(out, 'bridge-node.json'), 'utf8')); assert.equal(cfg.alias, 'Frankenstein'); assert.equal(cfg.nightly.start, '00:00'); assert.ok(cfg.id && cfg.id !== defaultConfig('x').id);
     assert.ok(!fs.readFileSync(path.join(out, 'README-PC2.txt'), 'utf8').includes(P.loadKey(key)), 'the readme never contains the key');

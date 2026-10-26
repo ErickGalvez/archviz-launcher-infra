@@ -8,8 +8,9 @@
 // What it does:
 //   1. Reports this PC's identity and live resources (CPU, RAM, GPU, VRAM, local model state) over a signed HTTP API.
 //   2. Finds the other PCs on the LAN (signed UDP beacons, one per real network interface).
-//   3. Runs jobs for the hub: ONLY "llm.chat" (forward a prompt to the local llama-server) and "echo" (for tests).
-//      It never runs commands, reads files or takes code from the network - a job is data, not instructions.
+//   3. Runs jobs for the hub: "llm.chat" (forward a prompt to the local llama-server), "echo" (for tests) and, ONLY on a PC whose own config enables it, "archive.scan"
+//      (the Archivist: read-only cataloguing of a folder inside the roots listed in THAT config file - see archivist.js). It never runs commands or takes code
+//      from the network - a job is data, not instructions - and the network cannot widen which folders may be read.
 //
 // Every request must carry a valid HMAC signature made with bridge.key (see protocol.js). Anyone on the LAN who
 // doesn't hold the key gets a bare 401.
@@ -23,10 +24,11 @@ const net = require('net');
 const { execFile } = require('child_process');
 const P = require('./protocol');
 const { createSupervisor } = require('./model-supervisor');
+const { createArchivist } = require('./archivist');
 
 const GB = 1024 ** 3;
 const MAX_BODY = 256 * 1024, MAX_QUEUE = 20, KEEP_JOBS = 200;
-const JOB_TYPES = new Set(['llm.chat', 'echo']);
+const JOB_TYPES = new Set(['llm.chat', 'echo', 'archive.scan']);
 
 // ── resource sampling ──
 const cpuSnapshot = () => os.cpus().reduce((a, c) => { const t = c.times; a.idle += t.idle; a.total += t.user + t.nice + t.sys + t.idle + t.irq; return a; }, { idle: 0, total: 0 });
@@ -58,7 +60,7 @@ function createAgent(opts) {
     id = crypto.randomBytes(6).toString('hex'), pendingRamGB = 0, discovery = true, statsMs = 2000, log = () => {}, gpuProvider = readGpu,
     hwPatch = null, statsPatch = null,   // hwPatch / statsPatch: only used by tests and the demo server to impersonate other hardware
     llama = null, nightly = undefined, idleMinutes = 15, supervisor: injected = null,   // the ONE local model server this PC may run (from bridge-node.json)
-    render = {}, statePath = null } = opts;
+    render = {}, statePath = null, archiveCfg = () => (opts.archive || {}), archiveDir = null, archiveSliceMs = 0 } = opts;   // archiveCfg: THIS PC's { enabled, roots }, read again for every request so an edit of the config applies at once
   if (!key) throw new Error('agent needs a key');
   const llamaUrl = opts.llamaUrl || ('http://127.0.0.1:' + ((llama && llama.port) || 8097));
   const renderCfg = { enabled: render.enabled !== false, ports: Array.isArray(render.ports) ? render.ports.filter(Number.isInteger) : [8888], canRender: render.canRender !== false };
@@ -96,24 +98,48 @@ function createAgent(opts) {
       ts: Date.now(), cpuPct: state.cpuPct, ramUsedGB: +((os.totalmem() - os.freemem()) / GB).toFixed(1), ramTotalGB: +(os.totalmem() / GB).toFixed(1), gpu: state.gpu,
       llm: { up: state.llmUp, model, busy: !!running, queued: queue.length },
       render: { busy: renderBusy(), probe: state.renderProbe, hint: state.hintUntil > Date.now(), canRender: renderCfg.canRender, reserved: state.reserved },
+      archive: { enabled: archiveOn(), roots: archiveOn() ? ((archiveCfg() || {}).roots || []).length : 0 },
       model: supervisor ? supervisor.status() : { phase: state.llmUp ? 'up' : 'stopped', external: true, canStart: false, windowActive: false, demandActive: false, paused: false, error: null, window: null },
       jobs: { done: [...jobs.values()].filter((j) => j.status === 'done').length, failed: [...jobs.values()].filter((j) => j.status === 'failed').length },
     };
     return statsPatch ? statsPatch(s) : s;
   };
 
+  // ── the Archivist (secret department): off unless this PC's own config turns it on ──
+  const archiveOn = () => { const c = archiveCfg() || {}; return c.enabled === true; };
+  const archive = createArchivist({ stateDir: archiveDir || path.join(statePath ? path.dirname(statePath) : os.tmpdir(), 'archive-data'), roots: () => ((archiveCfg() || {}).roots || []), now: Date.now, log,
+    llm: async ({ messages, maxTokens = 256, temperature = 0.2 }) => {
+      if (renderBusy()) throw new Error('rendering: this PC is serving a client, so it does not run the model');
+      if (!state.llmUp) throw new Error('llm_unavailable: no local model is running on this PC');
+      if (supervisor) supervisor.touch();
+      const r = await fetch(llamaUrl + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(3 * 60 * 1000),
+        body: JSON.stringify({ model, messages, max_tokens: Math.min(maxTokens, 1600), temperature, stream: false, chat_template_kwargs: { enable_thinking: false } }) });
+      if (!r.ok) throw new Error('model server answered HTTP ' + r.status);
+      const j = await r.json();
+      return (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    } });
+
   // ── jobs ──
   const clip = (s, n) => String(s == null ? '' : s).slice(0, n);
   function validateJob(b) {
     if (!b || typeof b !== 'object') return 'body must be an object';
     if (!JOB_TYPES.has(b.type)) return 'unsupported job type';
+    if (b.type === 'archive.scan') {
+      if (!archiveOn()) return 'archive: this PC does not run the Archivist (it is off in bridge-node.json)';
+      const p = b.params;
+      if (!p || typeof p !== 'object' || typeof p.path !== 'string' || !p.path || p.path.length > 500) return 'params.path must be a folder path';
+      if (p.runId !== undefined && !/^ar_[0-9a-f]{10}(_\d{1,10})?$/.test(String(p.runId))) return 'bad run id';
+      const chk = archive.check(p.path); if (!chk.ok) return chk.error;
+      return null;
+    }
     if (!Array.isArray(b.messages) || b.messages.length < 1 || b.messages.length > 20) return 'messages must be 1-20 items';
     for (const m of b.messages) if (!m || !['system', 'user', 'assistant'].includes(m.role) || typeof m.content !== 'string' || m.content.length > 16000) return 'bad message';
     return null;
   }
   function enqueue(b) {
-    const job = { id: crypto.randomBytes(8).toString('hex'), type: b.type, role: clip(b.role, 40), area: clip(b.area, 40), title: clip(b.title, 120), confidential: !!b.confidential,
-      messages: b.messages.map((m) => ({ role: m.role, content: m.content })), maxTokens: Math.min(Math.max(parseInt(b.maxTokens, 10) || 512, 1), 2048), thinking: !!b.thinking,
+    const p = b.type === 'archive.scan' ? { path: clip(b.params.path, 500), runId: b.params.runId ? String(b.params.runId) : undefined, fresh: b.params.fresh === true, maxFiles: Math.min(Math.max(parseInt(b.params.maxFiles, 10) || 400, 1), 20000), sliceMinutes: Math.min(Math.max(parseInt(b.params.sliceMinutes, 10) || 10, 1), 30) } : null;
+    const job = { id: crypto.randomBytes(8).toString('hex'), type: b.type, role: clip(b.role, 40), area: clip(b.area, 40), title: clip(b.title, 120), confidential: b.type === 'archive.scan' ? true : !!b.confidential, params: p, progress: null, cancel: false,
+      messages: p ? [] : b.messages.map((m) => ({ role: m.role, content: m.content })), maxTokens: Math.min(Math.max(parseInt(b.maxTokens, 10) || 512, 1), 2048), thinking: !!b.thinking,
       status: 'queued', createdAt: Date.now(), startedAt: null, doneAt: null, result: null, error: null };
     jobs.set(job.id, job); queue.push(job);
     if (jobs.size > KEEP_JOBS) for (const [k, v] of jobs) { if (v.status === 'done' || v.status === 'failed') { jobs.delete(k); if (jobs.size <= KEEP_JOBS) break; } }
@@ -124,7 +150,14 @@ function createAgent(opts) {
     job.status = 'running'; job.startedAt = Date.now();
     try {
       if (job.type === 'echo') job.result = { text: job.messages.map((m) => m.content).join('\n'), tokens: 0 };
-      else {
+      else if (job.type === 'archive.scan') {
+        if (!archiveOn()) throw new Error('archive: this PC does not run the Archivist');
+        if (renderBusy()) throw new Error('rendering: this PC is serving a client, so it does not run the model');
+        if (!state.llmUp) throw new Error('llm_unavailable: no local model is running on this PC');
+        const digest = await archive.scan(job.params, { cancelled: () => job.cancel || renderBusy(), deadline: Date.now() + (archiveSliceMs > 0 ? archiveSliceMs : job.params.sliceMinutes * 60000), progress: (pr) => { job.progress = pr; } });
+        if (renderBusy() && !digest.done) throw new Error('rendering: a client session started; the scan keeps what it did and resumes later');
+        job.result = { text: JSON.stringify(digest), tokens: 0 };
+      } else {
         if (renderBusy()) throw new Error('rendering: this PC is serving a client, so it does not run the model');
         if (!state.llmUp) throw new Error('llm_unavailable: no local model is running on this PC');
         if (supervisor) supervisor.touch();
@@ -148,7 +181,7 @@ function createAgent(opts) {
     running = queue.shift();
     runJob(running).finally(() => { running = null; pump(); });
   }
-  const jobView = (j, full) => ({ id: j.id, type: j.type, role: j.role, area: j.area, title: j.title, confidential: j.confidential, status: j.status, createdAt: j.createdAt, startedAt: j.startedAt, doneAt: j.doneAt, error: j.error, ...(full ? { result: j.result } : {}) });
+  const jobView = (j, full) => ({ id: j.id, type: j.type, role: j.role, area: j.area, title: j.title, confidential: j.confidential, status: j.status, createdAt: j.createdAt, startedAt: j.startedAt, doneAt: j.doneAt, error: j.error, progress: j.progress || null, ...(full ? { result: j.result } : {}) });
 
   // ── HTTP ──
   function handle(req, res) {
@@ -173,6 +206,25 @@ function createAgent(opts) {
         const bad = validateJob(b); if (bad) return send(400, { ok: false, error: bad });
         if (queue.length >= MAX_QUEUE) return send(503, { ok: false, error: 'queue full' });
         return send(202, { ok: true, jobId: enqueue(b).id });
+      }
+      // The Archivist's catalogs: read-only, and only on a PC whose own config enables it. A path in a request is only ever checked against the roots in that config.
+      if (p.startsWith('/v1/archive/')) {
+        if (!archiveOn()) return send(404, { ok: false, error: 'the Archivist is not enabled on this PC' });
+        const parts = p.slice(12).split('/');
+        if (req.method === 'GET' && p === '/v1/archive/roots') return send(200, { ok: true, roots: ((archiveCfg() || {}).roots || []).filter((r) => typeof r === 'string') });
+        if (req.method === 'GET' && p === '/v1/archive/runs') return send(200, { ok: true, runs: archive.listRuns() });
+        if (req.method === 'GET' && parts[0] === 'runs' && parts[1] && !parts[2]) { const sm = archive.getSummary(parts[1]); return sm ? send(200, { ok: true, summary: sm }) : send(404, { ok: false, error: 'no such run' }); }
+        if (req.method === 'GET' && parts[0] === 'runs' && parts[1] && parts[2] === 'files') { const q = Object.fromEntries(u.searchParams); const r = archive.getFiles(parts[1], q); return r ? send(200, { ok: true, ...r }) : send(404, { ok: false, error: 'no such run' }); }
+        let b; if (req.method === 'POST') { try { b = JSON.parse(body || '{}'); } catch (e) { return send(400, { ok: false, error: 'invalid JSON' }); } }
+        if (req.method === 'POST' && p === '/v1/archive/check') { const r = archive.check(b && b.path); return send(r.ok ? 200 : 400, r.ok ? { ok: true } : { ok: false, code: r.code, error: r.error }); }
+        if (req.method === 'POST' && p === '/v1/archive/cancel') { const j = jobs.get(String((b && b.jobId) || '')); if (!j || j.type !== 'archive.scan') return send(404, { ok: false, error: 'no such scan' }); j.cancel = true; return send(200, { ok: true }); }
+        if (req.method === 'POST' && p === '/v1/archive/forget') {
+          const rid = String((b && b.runId) || '');          // a run that a job is reading right now (or is queued to continue) is not deleted under it
+          const busy = [...jobs.values()].some((j) => j.type === 'archive.scan' && (j.status === 'queued' || j.status === 'running') && (j.params.runId === rid || (j.progress && j.progress.runId === rid)));
+          if (busy) return send(409, { ok: false, error: 'That run is still being worked on: cancel it first.' });
+          return send(200, { ok: archive.deleteRun(rid) });
+        }
+        return send(404, { ok: false, error: 'not found' });
       }
       // The only controls the network has over this PC's model and render state. None of them can name a file, a command or an argument.
       if (req.method === 'POST' && (p === '/v1/model' || p === '/v1/reserve' || p === '/v1/hint')) {
@@ -236,7 +288,7 @@ const defaultConfig = (alias) => ({
 });
 
 // Everything a second PC needs, in ONE folder: copy it over by hand, then double-click join.bat there.
-const BUNDLE_FILES = ['node-agent.js', 'protocol.js', 'model-supervisor.js', 'schedule.js', 'start-node.bat', 'join.bat', 'join.ps1'];
+const BUNDLE_FILES = ['node-agent.js', 'protocol.js', 'model-supervisor.js', 'schedule.js', 'archivist.js', 'start-node.bat', 'join.bat', 'join.ps1'];
 function exportBundle(srcDir, keyFile, target) {
   if (!target) throw new Error('usage: node node-agent.js --export-bundle <empty folder>');
   if (fs.existsSync(target) && fs.readdirSync(target).length) throw new Error('that folder is not empty: ' + target);
@@ -293,7 +345,8 @@ function main() {
   if (!fs.existsSync(keyFile)) { console.error('No key at ' + keyFile + '. Run once with --init (on the first PC), then copy that file to the other PC(s).'); process.exit(2); }
   const cfg = fs.existsSync(cfgFile) ? readConfig(cfgFile) : {};
   const key = P.loadKey(keyFile);
-  const agent = createAgent({ ...cfg, key, statePath: path.join(path.dirname(cfgFile), 'bridge-node-state.json'), log: (m) => console.log(new Date().toISOString().slice(11, 19) + ' ' + m) });
+  // The Archivist's settings are re-read from this file for every request: adding a folder with archive-allow.js needs no restart.
+  const agent = createAgent({ ...cfg, key, statePath: path.join(path.dirname(cfgFile), 'bridge-node-state.json'), archiveCfg: () => { try { return readConfig(cfgFile).archive || {}; } catch (e) { return {}; } }, archiveDir: path.join(path.dirname(cfgFile), 'archive-data'), log: (m) => console.log(new Date().toISOString().slice(11, 19) + ' ' + m) });
   agent.start().then((p) => {
     console.log(`G741 bridge node "${cfg.alias || os.hostname()}" listening on :${p}  (key fingerprint ${P.fingerprint(key)}, discovery ${cfg.discoveryPort || 7412}/udp)`);
     console.log('If Windows asks, allow Node.js on PRIVATE networks only. Ctrl+C to stop.');

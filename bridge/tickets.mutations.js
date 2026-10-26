@@ -71,7 +71,7 @@ module.exports = [
   ['tasks lose the handler that ties them to Vera', 'taskio.js', 'handler: clip(input.handler, 20) || undefined, ', ''],
   ['a finished task is never handed to the verifier', 'dispatcher.js', "try { onDone(taskio.getRaw(t.id)); } catch (e) { log('on-done handler failed: ' + e.message); }", ''],
   ['a web request can set a task\'s handler', 'index.js', ', proposal: undefined, handler: undefined })', ', proposal: undefined })'],
-  ['the dispatcher is not wired to Vera', 'index.js', 'onDone: (t) => verifier.handleDone(t)', 'onDone: () => {}'],
+  ['the dispatcher is not wired to Vera', 'index.js', 'onDone: (t) => { verifier.handleDone(t);', 'onDone: (t) => { '],
   ['the routines are not given Vera', 'index.js', 'kick: () => dispatcher.kick(), log, verifier, idle:', 'kick: () => dispatcher.kick(), log, idle:'],
   ['a folder that does not exist or is relative is read', 'index.js', 'path.isAbsolute(v) && fs.existsSync(v)', 'true'],
   ['Vera is not on the local lane', 'policy.js', "verify: 'local',", ''],

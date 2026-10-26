@@ -160,8 +160,21 @@ function createHub(opts) {
     const d = devices.get(id);
     if (!d || !d.online) throw new Error('device offline');
     const area = String(spec.area || '').toLowerCase();
+    if (spec.type === 'archive.scan') {                                        // the Archivist: a folder to catalogue, never a prompt; the PC checks it against its own allowed list
+      const r = await call(at(d), 'POST', '/v1/jobs', { type: 'archive.scan', role: spec.role, area: 'archive', title: spec.title, confidential: true, params: spec.params });
+      return { jobId: r.jobId };
+    }
     const r = await call(at(d), 'POST', '/v1/jobs', { type: 'llm.chat', role: spec.role, area, title: spec.title, confidential: isConfidential(policy, area, spec.confidential), messages: spec.messages, maxTokens: spec.maxTokens, thinking: !!spec.thinking });
     return { jobId: r.jobId };
+  }
+  // The PC that runs the Archivist: the launcher's own PC (PC-1), online, with the Archivist enabled in ITS config. Nothing else may.
+  const archiveDevice = () => [...devices.values()].find((d) => d.source === 'local' && d.online && d.stats && d.stats.archive && d.stats.archive.enabled) || null;
+  // Reads (and the cancel/forget controls) of the Archivist's catalogs, proxied to that PC with a signed request.
+  async function archiveCall(id, method, target, bodyObj) {
+    const d = devices.get(id);
+    if (!d || !d.online || d.source !== 'local') throw new Error('the Archivist runs only on the launcher PC, and it is not online');
+    if (!/^\/v1\/archive\/[\w/.?=&%+~!*'()-]*$/.test(target) || /\.\./.test(target.split('?')[0])) throw new Error('bad archive request');     // no "..": the agent would resolve it out of /v1/archive/
+    return call(at(d), method, target, bodyObj);
   }
   async function jobOn(id, jobId) {
     const d = devices.get(id);
@@ -217,7 +230,7 @@ function createHub(opts) {
   const devicesRaw = () => [...devices.values()].map((d) => ({ ...d, alias: aliases()[d.id] || d.nodeAlias }));
 
   return { start, stop, refresh, view, coordination, devices: devicesRaw, setAlias, setReserved, modelAction, submit, jobStatus, submitTo, jobOn, preRender, pickDevice,
-    renderBusyOf, reservedOf, aiCapable, aiReady, idleEnough, assignmentOf, load: byLoad, policy };
+    archiveDevice, archiveCall, renderBusyOf, reservedOf, aiCapable, aiReady, idleEnough, assignmentOf, load: byLoad, policy };
 }
 
 module.exports = { createHub, laneFor, isConfidential, isPrivateHost };

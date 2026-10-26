@@ -17,7 +17,7 @@ const DEFAULT_TZ = -360;                       // minutes east of UTC; Mexico Ci
 const LANES = ['local', 'cloud', 'human', 'script'];
 // proposed = a cloud-lane piece of work prepared for the owner to approve (it is never sent anywhere by itself); dismissed = the owner said no.
 const STATUSES = ['queued', 'running', 'done', 'failed', 'proposed', 'dismissed'];
-const SOURCES = ['manual', 'ask', 'routine', 'bridge'];
+const SOURCES = ['manual', 'ask', 'routine', 'bridge', 'archive'];
 const BULK = 5;                                // more than this many of the same CRM change collapse into one task
 
 const readJsonl = (f) => { try { return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean); } catch (e) { return []; } };
@@ -126,6 +126,12 @@ function createTaskio(opts) {
 
   // ── explicit task writes ──
   function cleanJob(j) {
+    // The Archivist's scan has no prompt: it names a folder (checked again by the PC that runs it against ITS own list of allowed folders) and is pinned to the launcher's PC.
+    if (j && j.type === 'archive.scan') {
+      const p = j.params || {};
+      if (typeof p.path !== 'string' || !p.path.trim() || p.path.length > 500 || /[\u0000-\u001f]/.test(p.path)) return null;
+      return { type: 'archive.scan', pin: 'local', params: { path: p.path.trim(), runId: /^ar_[0-9a-f]{10}(_\d{1,10})?$/.test(String(p.runId || '')) ? String(p.runId) : undefined, fresh: p.fresh === true, maxFiles: Math.min(Math.max(parseInt(p.maxFiles, 10) || 400, 1), 20000), sliceMinutes: Math.min(Math.max(parseInt(p.sliceMinutes, 10) || 10, 1), 30) }, role: clip(j.role, 40), area: 'archive', confidential: true };
+    }
     if (!j || !Array.isArray(j.messages) || j.messages.length < 1 || j.messages.length > 20) return null;
     const messages = [];
     for (const m of j.messages) {

@@ -55,6 +55,8 @@ taskio-eod.jsonl
 bridge-reserved.json
 routines-state.json
 bridge/bridge-node-state.json
+# The Archivist's catalogs of a person's own files (names, summaries, hashes) - private, stay on the PC that read them
+bridge/archive-data/
 # Model + llama.cpp files a second PC downloads/copies next to join.bat - large, per-machine
 bridge/dl/
 bridge/llama/

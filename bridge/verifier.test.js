@@ -265,9 +265,9 @@ const store = (list) => ({ list: () => list, get: (id) => list.find((b) => b.id 
 
   await test('the launcher glue hands finished tasks to Vera, gives her the routines, and strips "handler" from web-made tasks', () => {
     const idx = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
-    assert.ok(/onDone: \(t\) => verifier\.handleDone\(t\)/.test(idx), 'the dispatcher must call verifier.handleDone');
+    assert.ok(/onDone: \(t\) => \{ verifier\.handleDone\(t\);/.test(idx), 'the dispatcher must call verifier.handleDone');
     assert.ok(/createRoutines\(\{[^}]*\bverifier\b[^}]*\}\)/.test(idx), 'the routines must be given the verifier');
-    assert.ok(/verifier, stop:/.test(idx), 'the launcher reaches the verifier through bridge.verifier (the fix route sweeps with it)');
+    assert.ok(/verifier, archive, stop:/.test(idx), 'the launcher reaches the verifier through bridge.verifier (the fix route sweeps with it)');
     assert.ok(/const roots = \{ launcher: dir,/.test(idx) && /path\.isAbsolute\(v\) && fs\.existsSync\(v\)/.test(idx), 'only absolute folders that exist are ever read');
   });
 

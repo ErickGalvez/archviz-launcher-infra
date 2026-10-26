@@ -16,6 +16,7 @@ const { createTaskio, DEFAULT_TZ } = require('./taskio');
 const { createDispatcher } = require('./dispatcher');
 const { createRoutines } = require('./routines');
 const { createVerifier } = require('./verifier');
+const { createArchive } = require('./archive.js');
 const { DEFAULT_WINDOW } = require('./schedule');
 const defaultPolicy = require('./policy');
 
@@ -31,7 +32,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
 
   // The hub needs the shared key. No key yet = the bridge is simply "not set up": device routes report that, Task-IO still works.
   const keyFile = process.env.G741_BRIDGE_KEY_FILE || path.join(dir, 'bridge', 'bridge.key');
-  let hub = null, hubError = null, dispatcher = null, routines = null, routineTimer = null;
+  let hub = null, hubError = null, dispatcher = null, routines = null, routineTimer = null, archive = null;
   // Vera, the verifier: reads the repo checkouts named in bridge.json (verify.roots; the launcher's own folder by default) and writes verdicts onto tickets.
   const rootsOf = () => {
     const cfg = (readJson(path.join(dir, 'bridge.json'), {}).verify || {}).roots || {};
@@ -41,7 +42,8 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
   const verifier = createVerifier({ tickets, taskio, getCases, regressions, rootsOf, log, kick: () => { if (dispatcher) dispatcher.kick(); } });
   try {
     hub = createHub({ dir, key: P.loadKey(keyFile), log, getRenderState, idleCfg, ...hubOptions });
-    dispatcher = createDispatcher({ hub, taskio, log, pollMs: hubOptions.dispatchMs || 3000, onDone: (t) => verifier.handleDone(t) });
+    dispatcher = createDispatcher({ hub, taskio, log, pollMs: hubOptions.dispatchMs || 3000, onDone: (t) => { verifier.handleDone(t); if (archive) archive.handleDone(t); } });
+    archive = createArchive({ taskio, hub, log });
     routines = createRoutines({ taskio, dir, policy: hub.policy, window: windowCfg(), kick: () => dispatcher.kick(), log, verifier, idle: () => hub.devices().some(hub.idleEnough) });
     if (autoStart && !process.env.G741_BRIDGE_DISABLED) {
       hub.start(); dispatcher.start();
@@ -72,7 +74,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
 
   function handle(req, res, u) {
     const p = u.pathname;
-    if (!p.startsWith('/api/bridge/') && !p.startsWith('/api/taskio/')) return false;
+    if (!p.startsWith('/api/bridge/') && !p.startsWith('/api/taskio/') && !p.startsWith('/api/archive/')) return false;
     if (!isAuthed(req)) { json(res, 401, { ok: false, error: 'Unauthorized' }); return true; }
     const post = (fn) => { readBody(req, res, (b) => (b ? fn(b) : json(res, 400, { ok: false, error: 'Invalid body' }))); return true; };
     const needHub = () => { if (!hub) { json(res, 503, { ok: false, error: hubError }); return false; } return true; };
@@ -93,6 +95,20 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     if (p === '/api/bridge/routines' && req.method === 'GET') { if (!needHub()) return true; json(res, 200, { ok: true, window: windowCfg(), routines: routines.list() }); return true; }
     if (p === '/api/bridge/routines/run' && req.method === 'POST') return post((b) => { if (!needHub()) return; const r = routines.run(String(b.id || ''), { manual: true }); json(res, r.ok ? 200 : 400, r); });
     if (p === '/api/bridge/routines/toggle' && req.method === 'POST') return post((b) => { if (!needHub()) return; const r = routines.setEnabled(String(b.id || ''), !!b.enabled); json(res, r.ok ? 200 : 400, r); });
+
+    // ── the Archivist (secret department): scans of a folder on PC-1, read-only catalogs. All of it needs the Dev Console key (checked above). ──
+    if (p.startsWith('/api/archive/')) {
+      if (!archive) { json(res, 503, { ok: false, error: hubError }); return true; }
+      const reply = (promise) => { promise.then((r) => json(res, r && r.ok === false ? (r.code === 'busy' ? 409 : /no such|not found/i.test(r.error || '') ? 404 : 400) : 200, r)).catch(failed); return true; };
+      if (req.method === 'GET' && p === '/api/archive/status') return reply(archive.status());
+      if (req.method === 'GET' && p === '/api/archive/runs') return reply(archive.runs());
+      if (req.method === 'GET' && p === '/api/archive/run') return reply(archive.run(u.searchParams.get('id') || ''));
+      if (req.method === 'GET' && p === '/api/archive/files') return reply(archive.files(u.searchParams.get('id') || '', Object.fromEntries(u.searchParams)));
+      if (req.method === 'POST' && p === '/api/archive/start') return post((b) => reply(archive.start(b)));
+      if (req.method === 'POST' && p === '/api/archive/cancel') return post((b) => reply(archive.cancel(String(b.taskId || ''))));
+      if (req.method === 'POST' && p === '/api/archive/forget') return post((b) => reply(archive.forget(String(b.runId || ''))));
+      json(res, 404, { ok: false, error: 'Not found' }); return true;
+    }
 
     // One-shot job API (kept): picks a free PC right now, or records a cloud-lane request.
     if (p === '/api/bridge/jobs' && req.method === 'POST') return post((b) => {
@@ -148,7 +164,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     json(res, 404, { ok: false, error: 'Not found' });
     return true;
   }
-  return { handle, beforeRender, taskio, hub, dispatcher, routines, verifier, stop: () => { if (hub) hub.stop(); if (dispatcher) dispatcher.stop(); if (routineTimer) clearInterval(routineTimer); } };
+  return { handle, beforeRender, taskio, hub, dispatcher, routines, verifier, archive, stop: () => { if (hub) hub.stop(); if (dispatcher) dispatcher.stop(); if (routineTimer) clearInterval(routineTimer); } };
 }
 
 module.exports = { init };
