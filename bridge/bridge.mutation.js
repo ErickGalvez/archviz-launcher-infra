@@ -37,6 +37,17 @@ const MUTATIONS = [
   ['a task on a PC that starts rendering is left there', 'dispatcher.js', "if (hub.renderBusyOf(d) || hub.reservedOf(d)) return requeue(t, alias(d) + ' started rendering a client; moved to the other PC');", ''],
   ['a failing task is retried forever', 'dispatcher.js', 'if (attempts >= maxAttempts) return fail(', 'if (false) return fail('],
   ['scheduled tasks run outside the nightly window', 'dispatcher.js', "const routine = t.source === 'routine' && !(t.priority > 0);", 'const routine = false;'],
+  ['an idle PC does not get scheduled tasks in the daytime', 'dispatcher.js', "|| hub.idleEnough(d)));", "));"],
+  ['a PC that is rendering counts as idle', 'hub.js', "return c.enabled !== false && aiCapable(d) && typeof util === 'number' && util < limit;", "return c.enabled !== false && typeof util === 'number' && util < limit;"],
+  ['a PC exactly at the GPU limit counts as idle', 'hub.js', "typeof util === 'number' && util < limit;", "typeof util === 'number' && util <= limit;"],
+  ['a PC that does not report its GPU is assumed idle', 'hub.js', "typeof util === 'number' && util < limit;", "!(util >= limit);"],
+  ['the idle rule cannot be switched off', 'hub.js', "return c.enabled !== false && aiCapable(d)", "return aiCapable(d)"],
+  ['the GPU limit from bridge.json is ignored', 'hub.js', "limit = c.gpuPct > 0 ? c.gpuPct : 20;", "limit = 20;"],
+  ['routines start in the daytime even when no PC is idle', 'routines.js', "if (!inWindow(t, window) && !idle()) return [];", "if (!inWindow(t, window) && false) return [];"],
+  ['routines never start outside the night window, idle or not', 'routines.js', "if (!inWindow(t, window) && !idle()) return [];", "if (!inWindow(t, window)) return [];"],
+  ['a draft the owner asked for with run now is replaced by the next scheduled one', 'routines.js', "x.status === 'queued' && !(x.priority > 0))) taskio.patchTask", "x.status === 'queued')) taskio.patchTask"],
+  ['the routines are not told whether a PC is idle', 'index.js', "idle: () => hub.devices().some(hub.idleEnough) });", "});"],
+  ['the hub is not given the idle settings from bridge.json', 'index.js', "getRenderState, idleCfg, ...hubOptions", "getRenderState, ...hubOptions"],
   ['the agent runs the model while this PC is rendering', 'node-agent.js', "if (renderBusy()) throw new Error('rendering: this PC is serving a client, so it does not run the model');", ''],
   ['the agent will start the model while rendering', 'node-agent.js', "if (b.action === 'start' && renderBusy())", 'if (false)'],
   ['a launcher render hint is ignored', 'node-agent.js', 'state.hintUntil = b.render ? Date.now() + ttl * 1000 : 0;', 'state.hintUntil = 0;'],
@@ -48,7 +59,7 @@ const MUTATIONS = [
   ['an owner stop is not honoured', 'model-supervisor.js', 's.pausedUntil = now() + 60 * 60000;', 's.pausedUntil = 0;'],
   ['relative paths are accepted for the model command', 'model-supervisor.js', 'if (!path.isAbsolute(llama.exe) || !path.isAbsolute(llama.model)) return', 'if (false) return'],
   // ── routines and Task-IO ──
-  ['routines run outside the nightly window', 'routines.js', 'if (!inWindow(t, window)) return [];', ''],
+  ['routines run outside the nightly window', 'routines.js', 'if (!inWindow(t, window) && !idle()) return [];', ''],
   ['a routine runs again the same night', 'routines.js', 'if (s.enabled === false || s.lastNightKey === nightKey(t, window)) continue;', 'if (s.enabled === false) continue;'],
   ['weekly routines run every night', 'routines.js', "if (r.schedule === 'weekly' && s.lastRunAt && t - s.lastRunAt < 6.5 * DAY) continue;", ''],
   ['a local routine runs for a cloud-lane area', 'routines.js', "if (r.kind === 'ai' && lane !== 'local') {", 'if (false) {'],
@@ -57,7 +68,7 @@ const MUTATIONS = [
   ['the prompt of a task is exposed through the API', 'taskio.js', 'const view = (t) => { const { job, remote, ...rest } = t;', 'const view = (t) => { const { remote, ...rest } = t;'],
 ].concat(require('./tickets.mutations.js'));          // the ticket model, Vera and the fix-note reader
 
-const TESTS = ['bridge.test.js', 'coordinator.test.js', 'nightly.test.js', 'tickets.test.js', 'verifier.test.js', 'fixnote.test.js'];
+const TESTS = ['bridge.test.js', 'coordinator.test.js', 'nightly.test.js', 'tickets.test.js', 'verifier.test.js', 'fixnote.test.js', 'reports.test.js'];
 const runOne = (dir, f) => new Promise((resolve) => {
   const c = cp.spawn(process.execPath, [path.join(dir, f)], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; });

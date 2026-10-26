@@ -72,7 +72,7 @@ module.exports = [
   ['a finished task is never handed to the verifier', 'dispatcher.js', "try { onDone(taskio.getRaw(t.id)); } catch (e) { log('on-done handler failed: ' + e.message); }", ''],
   ['a web request can set a task\'s handler', 'index.js', ', proposal: undefined, handler: undefined })', ', proposal: undefined })'],
   ['the dispatcher is not wired to Vera', 'index.js', 'onDone: (t) => verifier.handleDone(t)', 'onDone: () => {}'],
-  ['the routines are not given Vera', 'index.js', 'kick: () => dispatcher.kick(), log, verifier });', 'kick: () => dispatcher.kick(), log });'],
+  ['the routines are not given Vera', 'index.js', 'kick: () => dispatcher.kick(), log, verifier, idle:', 'kick: () => dispatcher.kick(), log, idle:'],
   ['a folder that does not exist or is relative is read', 'index.js', 'path.isAbsolute(v) && fs.existsSync(v)', 'true'],
   ['Vera is not on the local lane', 'policy.js', "verify: 'local',", ''],
 
@@ -83,5 +83,27 @@ module.exports = [
   ['the snippet shows a test file instead of the fix', 'fixnote.js', raw`const TEST_OR_DOC = /(^|\/)(tests?|__tests__|docs?)\/|\.(test|spec)\.[a-z]+$|\.md$/i;`, 'const TEST_OR_DOC = /^$/;'],
   ['a snippet may be as long as it likes', 'fixnote.js', 'const MAX_SNIPPET = 3600;', 'const MAX_SNIPPET = 36000;'],
   ['added lines are not read from a diff', 'fixnote.js', "if (c === '+') { hunk.newLines.push(text); hunk.added++; }", "if (c === '+') { hunk.added++; }"],
+
+  // ── reports and their stamp ──
+  ['a report without a title is created', 'reports.js', "if (!clip(i.title, 160)) throw new Error('title is required');", ''],
+  ['a new report starts with the stamp the request names', 'reports.js', "ticketIds: i.ticketIds, stamp: 'new',", 'ticketIds: i.ticketIds, stamp: i.stamp,'],
+  ['the same ticket can be listed twice in a report', 'reports.js', 'if (id && !seen.has(id)) {', 'if (id) {'],
+  ['a report holds any number of tickets', 'reports.js', 'const MAX_TICKETS = 300,', 'const MAX_TICKETS = 300000,'],
+  ['an edit can change the report\'s id or its tickets directly', 'reports.js', "if (has('kind') && KINDS.includes(src.kind)) set('kind', src.kind);", "if (has('kind') && KINDS.includes(src.kind)) set('kind', src.kind);\n  if (has('ticketIds')) report.ticketIds = src.ticketIds;"],
+  ['a deleted ticket is not counted as missing', 'reports.js', 'missing: report.ticketIds.length - rows.length,', 'missing: 0,'],
+  ['an empty report is ready to close', 'reports.js', 'readyToClose: rows.length > 0 && resolved === rows.length', 'readyToClose: resolved === rows.length'],
+  ['the list entry carries every ticket id', 'reports.js', 'const { ticketIds, history, ...rest } = report;', 'const { history, ...rest } = report;'],
+  ['the detail leaves out the fix note', 'reports.js', 'if (b.fix) row.fix = { ...row.fix, rootCause: b.fix.rootCause,', 'if (false) row.fix = { ...row.fix, rootCause: b.fix.rootCause,'],
+  ['a stamp that is not new, working or closed is accepted', 'reports.js', "if (!STAMPS.includes(to)) return { ok: false, error: 'stamp must be new, working or closed' };", ''],
+  ['closing overrules a ticket the verifier failed', 'reports.js', 'if (blocking.length && !force) return', 'if (false) return'],
+  ['closing a report leaves its open tickets open', 'reports.js', "if (UNRESOLVED_STATUS(b) && (!blocking.includes(b.id) || force)) {", 'if (false) {'],
+  ['closing marks a ticket fixed even when it failed verification and force was not given', 'reports.js', '(!blocking.includes(b.id) || force)', 'true'],
+  ['working leaves the open tickets open', 'reports.js', "if (b.status === 'open') { Tk.patch(b, { status: 'in_progress' }", "if (false) { Tk.patch(b, { status: 'in_progress' }"],
+  ['working re-opens a fix that has a fix note', 'reports.js', "b.status === 'fixed' && !(b.fixRev > 0)) {", "b.status === 'fixed') {"],
+  ['working re-opens tickets fixed by hand long before the report was closed', 'reports.js', "else if (report.stamp === 'closed' && b.status === 'fixed'", "else if (b.status === 'fixed'"],
+  ['the stamp history grows without limit', 'reports.js', 'MAX_HISTORY = 50', 'MAX_HISTORY = 50000'],
+  ['the person who stamped is not recorded', 'reports.js', 'report.stamp = to; report.stampedAt = at; report.stampedBy = who;', 'report.stamp = to; report.stampedAt = at;'],
+  ['hand-closed tickets are not reported', 'reports.js', "return { ok: true, moved, handFixed: moved.fixed.filter(", "return { ok: true, moved, handFixed: [].filter("],
+  ['a stamp leaves no mark on the ticket saying where the change came from', 'tickets.js', "(note ? ' [' + clip(note, 120) + ']' : '')", "''"],
 ];
-module.exports.TESTS = ['tickets.test.js', 'verifier.test.js', 'fixnote.test.js'];
+module.exports.TESTS = ['tickets.test.js', 'verifier.test.js', 'fixnote.test.js', 'reports.test.js'];

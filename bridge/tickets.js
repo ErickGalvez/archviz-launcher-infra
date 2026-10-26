@@ -78,8 +78,9 @@ function activity(bug, by, text, now) {
 }
 
 // The edit route. Only these fields change; a value outside its list is ignored rather than stored. Changes to status, priority,
-// assignee, area and type leave a line in the thread. Returns the changed field names.
-function patch(bug, p, { now, by } = {}) {
+// assignee, area and type leave a line in the thread (with `note` after it when the change came from somewhere, such as a report's stamp).
+// Returns the changed field names.
+function patch(bug, p, { now, by, note } = {}) {
   const changed = [], src = p || {};
   const has = (k) => Object.prototype.hasOwnProperty.call(src, k);
   const set = (k, v) => { if (bug[k] !== v) { const before = bug[k]; bug[k] = v; changed.push(k); return before; } return undefined; };
@@ -93,7 +94,7 @@ function patch(bug, p, { now, by } = {}) {
   if (has('type') && TYPES.includes(src.type)) { const b = set('type', src.type); if (b !== undefined) line.push('Type: ' + b + ' -> ' + src.type); }
   if (has('area') && (AREAS.includes(src.area) || src.area === '')) { const b = set('area', src.area); if (b !== undefined) line.push('Area: ' + (b || 'none') + ' -> ' + (src.area || 'none')); }
   if (has('assignee')) { const a = clip(src.assignee, 40), b = set('assignee', a); if (b !== undefined) line.push('Assignee: ' + (b || 'nobody') + ' -> ' + (a || 'nobody')); }
-  if (line.length) activity(bug, by, line.join('; '), now);
+  if (line.length) activity(bug, by, line.join('; ') + (note ? ' [' + clip(note, 120) + ']' : ''), now);
   bug.updatedAt = isoNow(now);
   return changed;
 }

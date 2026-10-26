@@ -126,7 +126,8 @@ const ROUTINES = [
     } },
 ];
 
-function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Date.now, kick = () => {}, log = () => {}, tz = -360, verifier = null }) {
+// idle() says whether a PC could take scheduled work right now outside the night window (the hub's idleEnough on any device).
+function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Date.now, kick = () => {}, log = () => {}, tz = -360, verifier = null, idle = () => false }) {
   const stateFile = path.join(dir, 'routines-state.json');
   const load = () => { try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch (e) { return {}; } };
   const save = (st) => { try { fs.writeFileSync(stateFile, JSON.stringify(st, null, 2)); } catch (e) { log('could not save routine state: ' + e.message); } };
@@ -166,7 +167,8 @@ function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Da
       const dup = taskio.recent(t - 14 * DAY, (x) => x.routineId === r.id && x.proposal && x.proposal.transcript === out.proposal.transcript)[0];
       if (dup) { done({ lastResult: 'skipped: the same brief is already ' + dup.status, lastTaskId: dup.id }); return { ok: true, skipped: 'the same brief is already ' + dup.status }; }
     } else {
-      for (const old of taskio.recent(0, (x) => x.routineId === r.id && x.status === 'queued')) taskio.patchTask(old.id, { status: 'dismissed', detail: 'Replaced by a fresher run of the same routine.' });
+      // Only scheduled drafts are replaced: one the owner asked for with "run now" (priority > 0) stays in the queue until it has run.
+      for (const old of taskio.recent(0, (x) => x.routineId === r.id && x.status === 'queued' && !(x.priority > 0))) taskio.patchTask(old.id, { status: 'dismissed', detail: 'Replaced by a fresher run of the same routine.' });
     }
     const base = { title: r.title + ' - ' + label, persona: r.persona, area: r.area, source: 'routine', routineId: r.id, advisory: !!r.advisory, priority: manual ? 3 : 0 };
     const created = out.proposal
@@ -185,9 +187,10 @@ function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Da
   }
 
   // Called every minute: starts whatever is due, at most once per night (weekly ones at most once in ~a week).
+  // Inside the night window it always does; outside it, only while some PC is idle, so the nightlies catch up in the daytime without ever competing with a render.
   function tick() {
     const t = now();
-    if (!inWindow(t, window)) return [];
+    if (!inWindow(t, window) && !idle()) return [];
     const st = load(), started = [];
     for (const r of ROUTINES) {
       const s = st[r.id] || {};

@@ -2,7 +2,7 @@
 // Glue between the launcher and the bridge: mounts /api/bridge/* and /api/taskio/* behind the Dev Console key, and runs
 // the coordinator (dispatcher + routines) that makes the roles actually do their tasks.
 //
-//   const bridge = require('./bridge').init({ dir, isAuthed, cors, log, getProspects, getBugs, getRenderState });
+//   const bridge = require('./bridge/index.js').init({ dir, isAuthed, cors, log, getProspects, getBugs, getRenderState });   // not require('./bridge'): a bridge.json beside the launcher would win
 //   ...inside the request handler:   if (bridge.handle(req, res, parsedUrl)) return;
 //   ...at the top of launchPS():     await bridge.beforeRender();          // unload the local model before UE5 starts
 //
@@ -25,6 +25,9 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
   const taskio = createTaskio({ dir, getProspects, getBugs });
   const readJson = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { return fb; } };
   const windowCfg = () => ({ ...DEFAULT_WINDOW, ...(readJson(path.join(dir, 'bridge.json'), {}).nightly || {}) });
+  // Outside the night window the scheduled routines still run on a PC that is idle: online, not rendering, not reserved, GPU under gpuPct.
+  // bridge.json: { "idleRun": { "enabled": true, "gpuPct": 20 } }
+  const idleCfg = () => { const c = readJson(path.join(dir, 'bridge.json'), {}).idleRun || {}, pct = Number(c.gpuPct); return { enabled: c.enabled !== false, gpuPct: pct > 0 && pct <= 100 ? pct : 20 }; };
 
   // The hub needs the shared key. No key yet = the bridge is simply "not set up": device routes report that, Task-IO still works.
   const keyFile = process.env.G741_BRIDGE_KEY_FILE || path.join(dir, 'bridge', 'bridge.key');
@@ -37,9 +40,9 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
   };
   const verifier = createVerifier({ tickets, taskio, getCases, regressions, rootsOf, log, kick: () => { if (dispatcher) dispatcher.kick(); } });
   try {
-    hub = createHub({ dir, key: P.loadKey(keyFile), log, getRenderState, ...hubOptions });
+    hub = createHub({ dir, key: P.loadKey(keyFile), log, getRenderState, idleCfg, ...hubOptions });
     dispatcher = createDispatcher({ hub, taskio, log, pollMs: hubOptions.dispatchMs || 3000, onDone: (t) => verifier.handleDone(t) });
-    routines = createRoutines({ taskio, dir, policy: hub.policy, window: windowCfg(), kick: () => dispatcher.kick(), log, verifier });
+    routines = createRoutines({ taskio, dir, policy: hub.policy, window: windowCfg(), kick: () => dispatcher.kick(), log, verifier, idle: () => hub.devices().some(hub.idleEnough) });
     if (autoStart && !process.env.G741_BRIDGE_DISABLED) {
       hub.start(); dispatcher.start();
       routineTimer = setInterval(() => { try { routines.tick(); } catch (e) { log('routines: ' + e.message); } }, 60000);
@@ -77,7 +80,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     // ── devices + coordination ──
     if (p === '/api/bridge/devices' && req.method === 'GET') {
       const q = dispatcher ? dispatcher.queueView() : null;
-      json(res, 200, { ok: true, configured: !!hub, setup: hubError, devices: hub ? hub.view() : [], coordination: hub ? hub.coordination() : null, nightly: windowCfg(),
+      json(res, 200, { ok: true, configured: !!hub, setup: hubError, devices: hub ? hub.view() : [], coordination: hub ? hub.coordination() : null, nightly: windowCfg(), idleRun: idleCfg(),
         queue: q ? { running: q.running, queued: q.queued } : null, policy: hub ? hub.policy : defaultPolicy, generatedAt: Date.now() });
       return true;
     }

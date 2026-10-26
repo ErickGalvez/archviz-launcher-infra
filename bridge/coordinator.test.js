@@ -194,9 +194,9 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
   const rig = async (opts = {}) => {
     const llA = await fakeLlama(opts.llamaA), llB = await fakeLlama(opts.llamaB), dir = tmp();
     const mkNode = (alias, ll, util) => createAgent({ key: KEY, alias, port: 0, bindHost: '127.0.0.1', discovery: false, gpuProvider: gpu(util), statsMs: 100, llamaUrl: 'http://127.0.0.1:' + ll.port, model: 'q', render: { ports: [] } });
-    const A = mkNode('PC-A', llA, 5), B = mkNode('PC-B', llB, 20), pa = await A.start(), pb = await B.start();
+    const A = mkNode('PC-A', llA, opts.utilA == null ? 5 : opts.utilA), B = mkNode('PC-B', llB, opts.utilB == null ? 20 : opts.utilB), pa = await A.start(), pb = await B.start();
     const state = { render: 'stopped' };
-    const hub = createHub({ dir, key: KEY, getRenderState: () => state.render, targets: [{ host: '127.0.0.1', port: pa, source: 'local' }, { host: '127.0.0.1', port: pb, source: 'configured' }] });
+    const hub = createHub({ dir, key: KEY, getRenderState: () => state.render, idleCfg: opts.idleCfg, targets: [{ host: '127.0.0.1', port: pa, source: 'local' }, { host: '127.0.0.1', port: pb, source: 'configured' }] });
     const taskio = createTaskio({ dir, getProspects: () => [], getBugs: () => [] });
     const disp = createDispatcher({ hub, taskio, pollMs: 50, maxAttempts: 3 });
     await hub.refresh();
@@ -265,10 +265,40 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
     assert.match(r.taskio.getTask(id).detail, /Done on PC-B/);
     await r.stop();
   });
-  await test('owner requests run any time; scheduled (routine) tasks wait for the nightly window', async () => {
-    const r = await rig(), routine = r.job('nightly thing', { source: 'routine', priority: 0 }).task.id, owner = r.job('asked now').task.id;
+  await test('owner requests run any time; scheduled (routine) tasks wait for the nightly window while every GPU is busy', async () => {
+    const r = await rig({ utilA: 60, utilB: 45 }), routine = r.job('nightly thing', { source: 'routine', priority: 0 }).task.id, owner = r.job('asked now').task.id;
     assert.ok(await r.finish([owner]));
-    assert.equal(r.taskio.getTask(routine).status, 'queued', 'no PC reports an active nightly window, so the routine waits');
+    for (let i = 0; i < 3; i++) { await r.step(); await sleep(60); }
+    assert.equal(r.taskio.getTask(routine).status, 'queued', 'no PC is in its nightly window and no GPU is under 20%, so the routine waits');
+    await r.stop();
+  });
+  await test('outside the nightly window a scheduled task runs on a PC that is idle: GPU under 20%, not rendering, not reserved', async () => {
+    const r = await rig({ utilA: 90, utilB: 4 }), id = r.job('daytime nightly', { source: 'routine', priority: 0 }).task.id;
+    assert.ok(await r.finish([id]), 'PC-B is at 4%, so the routine runs now');
+    assert.equal(r.taskio.getTask(id).result.deviceId, r.devId('PC-B'), 'on the idle PC, never the busy one'); assert.equal(r.llA.state.calls, 0);
+    assert.equal(r.hub.view().find((d) => d.alias === 'PC-B').idle, true); assert.equal(r.hub.view().find((d) => d.alias === 'PC-A').idle, false);
+    await r.stop();
+  });
+  await test('20% is the line: a PC at exactly the threshold is not idle, and the limit can be changed or the rule switched off', async () => {
+    const at20 = await rig({ utilA: 20, utilB: 20 }), a = at20.job('edge', { source: 'routine', priority: 0 }).task.id;
+    for (let i = 0; i < 3; i++) { await at20.step(); await sleep(60); }
+    assert.equal(at20.taskio.getTask(a).status, 'queued', 'exactly 20% is not under 20%'); await at20.stop();
+    const looser = await rig({ utilA: 20, utilB: 20, idleCfg: () => ({ enabled: true, gpuPct: 30 }) }), b = looser.job('looser', { source: 'routine', priority: 0 }).task.id;
+    assert.ok(await looser.finish([b]), 'with the limit at 30% a PC at 20% is idle'); await looser.stop();
+    const off = await rig({ utilA: 1, utilB: 1, idleCfg: () => ({ enabled: false }) }), c = off.job('rule off', { source: 'routine', priority: 0 }).task.id;
+    for (let i = 0; i < 3; i++) { await off.step(); await sleep(60); }
+    assert.equal(off.taskio.getTask(c).status, 'queued', 'switched off: only the night window lets a routine run'); await off.stop();
+  });
+  await test('idleness never beats rendering: a rendering, reserved, offline or GPU-less PC is not idle even at 0%', async () => {
+    const r = await rig({ utilA: 0, utilB: 0 }), id = r.job('should wait', { source: 'routine', priority: 0 }).task.id;
+    r.state.render = 'streaming'; await r.hub.refresh(); await r.hub.setReserved(r.devId('PC-B'), true);
+    for (let i = 0; i < 4; i++) { await r.step(); await sleep(60); }
+    assert.equal(r.taskio.getTask(id).status, 'queued', 'PC-A renders, PC-B is reserved: a quiet GPU changes nothing'); assert.ok(r.hub.devices().every((d) => !r.hub.idleEnough(d)));
+    assert.equal(r.llA.state.calls + r.llB.state.calls, 0);
+    const noGpu = { id: 'n', online: true, source: 'configured', stats: { llm: { up: true }, render: { busy: false, reserved: false } } };
+    assert.equal(r.hub.idleEnough(noGpu), false, 'a PC that does not report its GPU is not assumed idle');
+    assert.equal(r.hub.idleEnough({ ...noGpu, online: false, stats: { ...noGpu.stats, gpu: { utilPct: 0 } } }), false);
+    assert.equal(r.hub.idleEnough({ ...noGpu, stats: { ...noGpu.stats, gpu: { utilPct: 0 } } }), true, 'control: with a GPU reading at 0% it is');
     await r.stop();
   });
   await test('a real failure is retried, then reported; it does not loop forever', async () => {
@@ -327,6 +357,26 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
     assert.ok(!next.includes('ximena-checklist') && !next.includes('talia-ideas'), 'weekly ones do not');
     NOW = hhmm('2026-10-21T08:00:00Z'); assert.ok(R.tick().map((x) => x.id).includes('ximena-checklist'), 'weekly ones are back after a week');
     NOW = hhmm('2026-10-13T08:00:00Z');
+  });
+  await test('outside the window the routines still start - once per night - but only while some PC is idle', () => {
+    let free = false;
+    const d3 = tmp(), tio3 = createTaskio({ dir: d3, getProspects: () => prospects, getBugs: () => bugs, now: () => NOW });
+    const R5 = createRoutines({ taskio: tio3, dir: d3, policy, window: S.DEFAULT_WINDOW, now: () => NOW, idle: () => free });
+    NOW = hhmm('2026-10-13T20:00:00Z');                                  // 14:00 local: outside the night window
+    assert.deepEqual(R5.tick(), [], 'no PC is idle: nothing starts');
+    free = true; const day = R5.tick().map((x) => x.id);
+    assert.ok(day.includes('nadia-pipeline') && day.includes('ward-digest') && day.includes('priya-bug-tests'), 'an idle PC lets tonight\'s routines run in the daytime: ' + day.join(','));
+    assert.deepEqual(R5.tick(), [], 'and only once for that night');
+    NOW = hhmm('2026-10-14T08:00:00Z'); assert.ok(R5.tick().map((x) => x.id).includes('nadia-pipeline'), 'the next night\'s window starts them again');
+    NOW = hhmm('2026-10-13T08:00:00Z');
+  });
+  await test('a fresher scheduled draft replaces an old unrun one, but a draft the owner asked for with "run now" is never replaced', () => {
+    const d4 = tmp(), tio4 = createTaskio({ dir: d4, getProspects: () => prospects, getBugs: () => bugs, now: () => NOW });
+    const R6 = createRoutines({ taskio: tio4, dir: d4, policy, window: S.DEFAULT_WINDOW, now: () => NOW });
+    const queued = () => tio4.openJobs().filter((t) => t.routineId === 'nadia-pipeline');
+    const mine = R6.run('nadia-pipeline', { manual: true }).taskId; R6.run('nadia-pipeline'); R6.run('nadia-pipeline');
+    assert.ok(queued().some((t) => t.id === mine), 'the owner\'s own request is still waiting its turn');
+    assert.equal(queued().filter((t) => t.priority === 0).length, 1, 'scheduled drafts still do not pile up');
   });
   await test('an AI routine queues a local job built from real data, flagged advisory/confidential where it must be', () => {
     const all = tio.openJobs(), nadia = all.find((t) => t.routineId === 'nadia-pipeline'), ximena = all.find((t) => t.routineId === 'ximena-checklist');
@@ -392,6 +442,16 @@ const llamaFiles = () => { const d = tmp(), exe = path.join(d, 'llama-server.exe
   await until(async () => (await api('GET', '/api/bridge/devices')).json.devices.some((d) => d.online), 5000);
   await test('every new route is closed without the Dev Console key', async () => {
     for (const [m, p] of [['GET', '/api/bridge/queue'], ['GET', '/api/bridge/routines'], ['POST', '/api/bridge/reserve'], ['POST', '/api/bridge/model'], ['POST', '/api/bridge/routines/run'], ['POST', '/api/bridge/routines/toggle'], ['POST', '/api/taskio/ask'], ['GET', '/api/taskio/task?id=x'], ['GET', '/api/taskio/proposals']]) assert.equal((await api(m, p, m === 'POST' ? {} : undefined, 'wrong')).status, 401, p);
+  });
+  await test('the idle-run settings come from bridge.json: the Devices route says which PCs are idle, and a switch turns the rule off', async () => {
+    const cfgFile = path.join(rd, 'bridge.json');
+    let d = (await api('GET', '/api/bridge/devices')).json;
+    assert.deepEqual(d.idleRun, { enabled: true, gpuPct: 20 }, 'defaults: on, under 20%'); assert.equal(d.devices[0].idle, true, 'the test PC sits at 2% GPU');
+    fs.writeFileSync(cfgFile, JSON.stringify({ idleRun: { enabled: true, gpuPct: 1 } }));
+    d = (await api('GET', '/api/bridge/devices')).json; assert.equal(d.idleRun.gpuPct, 1); assert.equal(d.devices[0].idle, false, '2% is over a 1% limit');
+    fs.writeFileSync(cfgFile, JSON.stringify({ idleRun: { enabled: false, gpuPct: 'lots' } }));
+    d = (await api('GET', '/api/bridge/devices')).json; assert.equal(d.idleRun.enabled, false); assert.equal(d.idleRun.gpuPct, 20, 'a nonsense limit falls back to 20'); assert.equal(d.devices[0].idle, false);
+    fs.rmSync(cfgFile, { force: true });
   });
   await test('hostile input never crashes a route or leaves a request hanging; an oversized body is answered with 413', async () => {
     const posts = ['/api/bridge/alias', '/api/bridge/reserve', '/api/bridge/model', '/api/bridge/jobs', '/api/bridge/routines/run', '/api/bridge/routines/toggle', '/api/taskio/task', '/api/taskio/ask', '/api/taskio/task/update', '/api/taskio/eod/submit'];

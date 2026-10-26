@@ -29,7 +29,8 @@ const isConfidential = (policy, area, flag) => !!flag || (policy.confidentialAre
 
 function createHub(opts) {
   const { dir, key, policy = defaultPolicy, pollMs = 4000, fetchImpl = fetch, log = () => {}, targets = null,
-    getRenderState = () => 'stopped' } = opts;   // render state of the PC that hosts the launcher: stopped | starting | running | streaming
+    getRenderState = () => 'stopped',   // render state of the PC that hosts the launcher: stopped | starting | running | streaming
+    idleCfg = () => ({}) } = opts;      // { enabled, gpuPct }: when a PC counts as idle enough for scheduled work outside the night window
   const devices = new Map(), hubJobs = new Map();
   const aliasFile = path.join(dir, 'bridge-aliases.json'), reservedFile = path.join(dir, 'bridge-reserved.json');
   let timer = null;
@@ -64,6 +65,12 @@ function createHub(opts) {
   const reservedOf = (d) => !!(reservedWant()[d.id] || (d.stats && d.stats.render && d.stats.render.reserved));
   const aiCapable = (d) => !!(d.online && d.stats && !renderBusyOf(d) && !reservedOf(d));            // may be given AI work (its model may still need to load)
   const aiReady = (d) => aiCapable(d) && !!(d.stats.llm && d.stats.llm.up);                         // ... and can start right now
+  // "Idle enough" lets the nightly routines run in the daytime too: the PC is online, is not rendering and is not reserved for rendering
+  // (that is aiCapable), and its GPU is under the threshold right now. A PC that does not report its GPU is not assumed to be idle.
+  const idleEnough = (d) => {
+    const c = idleCfg() || {}, util = d.stats && d.stats.gpu && d.stats.gpu.utilPct, limit = c.gpuPct > 0 ? c.gpuPct : 20;
+    return c.enabled !== false && aiCapable(d) && typeof util === 'number' && util < limit;
+  };
   function assignmentOf(d) {
     if (!d.online) return 'offline';
     if (reservedOf(d)) return 'reserved';
@@ -103,7 +110,7 @@ function createHub(opts) {
   function view() {
     const al = aliases();
     return [...devices.values()].map((d) => ({ id: d.id, alias: al[d.id] || d.nodeAlias, nodeAlias: d.nodeAlias, hostname: d.hostname, address: d.address, port: d.port, source: d.source,
-      online: d.online, lastSeen: d.lastSeen, hw: d.hw, stats: d.stats, error: d.error, rendering: renderBusyOf(d), reserved: reservedOf(d), assignment: assignmentOf(d) }))
+      online: d.online, lastSeen: d.lastSeen, hw: d.hw, stats: d.stats, error: d.error, rendering: renderBusyOf(d), reserved: reservedOf(d), assignment: assignmentOf(d), idle: idleEnough(d) }))
       .sort((a, b) => String(a.alias).localeCompare(String(b.alias)));
   }
   // The one-line answer to "who is carrying the AI work right now?" for the Devices page and the 3D map.
@@ -210,7 +217,7 @@ function createHub(opts) {
   const devicesRaw = () => [...devices.values()].map((d) => ({ ...d, alias: aliases()[d.id] || d.nodeAlias }));
 
   return { start, stop, refresh, view, coordination, devices: devicesRaw, setAlias, setReserved, modelAction, submit, jobStatus, submitTo, jobOn, preRender, pickDevice,
-    renderBusyOf, reservedOf, aiCapable, aiReady, assignmentOf, load: byLoad, policy };
+    renderBusyOf, reservedOf, aiCapable, aiReady, idleEnough, assignmentOf, load: byLoad, policy };
 }
 
 module.exports = { createHub, laneFor, isConfidential, isPrivateHost };

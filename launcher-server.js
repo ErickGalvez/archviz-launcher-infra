@@ -1272,9 +1272,13 @@ let qaCases = [];
 let qaHistory = {}; // { [caseId]: [ { ...previousSnapshot, versionedAt } ] }
 let qaBugs = [];
 let qaRegressions = []; // regression runs the verifier suggests: [{ id, at, cluster, caseIds, reason, status: suggested|started|dismissed, name }]
+let qaReports = []; // reports: a named set of tickets filed together + a stamp (new|working|closed) that moves them; see bridge/reports.js
 // The ticket model (fix notes, verification, the fix queue). If the file is missing the board answers 503 instead of the launcher failing to start.
 let Tk = null;
 try { Tk = require('./bridge/tickets'); } catch (e) { console.error('Ticket module not loaded: ' + e.message); }
+// Reports over the tickets (the Files room in the Virtual Team office, the QA console's Reports view). Optional like the ticket module.
+let Rp = null;
+try { Rp = require('./bridge/reports'); } catch (e) { console.error('Reports module not loaded: ' + e.message); }
 // Turns a merged pull request's "### Fix note: bug_..." sections into fix notes on the tickets. Optional: without it merges work as before.
 let FixNote = null;
 try { FixNote = require('./bridge/fixnote'); } catch (e) { console.error('Fix-note module not loaded: ' + e.message); }
@@ -1286,17 +1290,20 @@ function loadQaData() {
     qaHistory = parsed.history && typeof parsed.history === 'object' ? parsed.history : {};
     qaBugs = Array.isArray(parsed.bugs) ? parsed.bugs : [];
     qaRegressions = Array.isArray(parsed.regressions) ? parsed.regressions : [];
+    qaReports = Array.isArray(parsed.reports) ? parsed.reports : [];
   } catch (e) {
     qaCases = [];
     qaHistory = {};
     qaBugs = [];
     qaRegressions = [];
+    qaReports = [];
   }
   if (Tk) qaBugs = qaBugs.map(Tk.normalize);   // tickets from before fix notes existed get their defaults
+  if (Rp) qaReports = qaReports.map(Rp.normalize);
 }
 function saveQaData() {
   try {
-    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory, bugs: qaBugs, regressions: qaRegressions }, null, 2));
+    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory, bugs: qaBugs, regressions: qaRegressions, reports: qaReports }, null, 2));
   } catch (e) { /* saving must never crash a request */ }
 }
 loadQaData();
@@ -1584,7 +1591,9 @@ const CORS_HEADERS = {
 // carries on without it.
 let bridgeRoutes = null;
 try {
-  bridgeRoutes = require('./bridge').init({
+  // Named with /index.js on purpose: bridge.json sits next to this file, and require('./bridge') finds a FILE (bridge.json) before it looks at the
+  // folder, so the bridge silently failed to load ("init is not a function") from the moment that config file existed.
+  bridgeRoutes = require('./bridge/index.js').init({
     dir: BAT_DIR,
     isAuthed: isDevConsoleAuthed,
     cors: CORS_HEADERS,
@@ -1732,10 +1741,52 @@ const server = http.createServer((req, res) => {
   // Reads are public like the cases, but without the thread: a fix note describes how the system works inside, so the comments, root
   // causes and code snippets only come back for a request that carries the QA key. Every write needs the key. The model (fix notes,
   // verification, the fix queue) is bridge/tickets.js; these routes only check the key, parse the body and call it.
-  if (parsedUrl.pathname.startsWith('/api/qa/bugs') || parsedUrl.pathname.startsWith('/api/qa/regressions')) {
+  if (parsedUrl.pathname.startsWith('/api/qa/bugs') || parsedUrl.pathname.startsWith('/api/qa/regressions') || parsedUrl.pathname.startsWith('/api/qa/reports')) {
     const qaJson = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify(obj)); };
     if (!Tk) { qaJson(503, { ok: false, error: 'The ticket module is not loaded on this host (bridge/tickets.js)' }); return; }
     const p = parsedUrl.pathname;
+    // ── REPORTS — a set of tickets filed together, and the stamp that moves them (new | working | closed) ──
+    // Closed to everyone without a key (a report shows fix notes, which describe the inside of the system). Either key opens it: the QA key (the QA
+    // console) or the Dev Console key (the Virtual Team office, where the Files room lives). The model is bridge/reports.js.
+    if (p === '/api/qa/reports' || p.startsWith('/api/qa/reports/')) {
+      if (!Rp) { qaJson(503, { ok: false, error: 'The reports module is not loaded on this host (bridge/reports.js)' }); return; }
+      if (!isQaAuthed(req) && !isDevConsoleAuthed(req)) { qaJson(401, { ok: false, error: 'Unauthorized' }); return; }
+      const byId = () => new Map(qaBugs.map((x) => [x.id, x]));
+      if (req.method === 'GET' && p === '/api/qa/reports') { qaJson(200, { ok: true, reports: qaReports.map((r) => Rp.summary(r, byId(), Tk)) }); return; }
+      if (req.method === 'GET' && p === '/api/qa/reports/detail') {
+        const r = qaReports.find((x) => x.id === String(parsedUrl.searchParams.get('id') || ''));
+        qaJson(r ? 200 : 404, r ? { ok: true, report: Rp.detail(r, byId(), Tk) } : { ok: false, error: 'Not found' }); return;
+      }
+      if (req.method !== 'POST') { qaJson(404, { ok: false, error: 'Not found' }); return; }
+      readJsonBody(req).then((b) => {
+        const rep = () => qaReports.find((x) => x.id === String((b && b.id) || ''));
+        const missing = () => qaJson(404, { ok: false, error: 'Not found' });
+        const who = (b && b.by) || (isQaAuthed(req) ? 'QA console' : 'Dev Console');
+        if (p === '/api/qa/reports/create') {
+          const made = Rp.create({ ...b, by: who });
+          qaReports.unshift(made); qaReports.length = Math.min(qaReports.length, 200); saveQaData();
+          return qaJson(200, { ok: true, report: Rp.detail(made, byId(), Tk) });
+        }
+        if (p === '/api/qa/reports/update') {
+          const r = rep(); if (!r) return missing();
+          Rp.patch(r, b.patch); saveQaData();
+          return qaJson(200, { ok: true, report: Rp.detail(r, byId(), Tk) });
+        }
+        if (p === '/api/qa/reports/stamp') {
+          const r = rep(); if (!r) return missing();
+          const out = Rp.stamp(r, String(b.stamp || ''), { tickets: qaBugs, Tk, by: who, note: b.note, force: b.force === true });
+          if (!out.ok) return qaJson(out.blocking ? 409 : 400, out);
+          saveQaData();
+          return qaJson(200, { ...out, report: Rp.detail(r, byId(), Tk) });
+        }
+        if (p === '/api/qa/reports/delete') {
+          qaReports = qaReports.filter((x) => x.id !== String((b && b.id) || '')); saveQaData();
+          return qaJson(200, { ok: true });
+        }
+        return qaJson(404, { ok: false, error: 'Not found' });
+      }).catch((e) => qaJson(400, { ok: false, error: e && e.message ? e.message : 'Invalid body' }));
+      return;
+    }
     if (req.method === 'GET' && p === '/api/qa/bugs') {
       const full = isQaAuthed(req);
       qaJson(200, { bugs: qaBugs.map(full ? Tk.fullView : Tk.publicView), full });

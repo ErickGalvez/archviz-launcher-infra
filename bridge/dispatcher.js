@@ -8,7 +8,8 @@
 //      to the cloud. (The turn system allows one client session at a time, so a PC is normally free.)
 //   4. If the chosen PC's model is not loaded, the dispatcher asks that PC to load it (the node decides whether it may)
 //      and the task waits until it is up.
-//   5. Routine (scheduled) tasks only run inside the nightly window; owner-requested tasks run any time.
+//   5. Routine (scheduled) tasks run inside the nightly window, or at any other time on a PC that is idle (online, not rendering,
+//      not reserved, GPU under the idle threshold - see hub.idleEnough). Owner-requested tasks run any time.
 //   6. If the PC a task is running on starts rendering, goes offline or loses its model, the task goes back in the queue
 //      and runs on the other PC. A genuine error counts as an attempt; three attempts and it is marked failed.
 const MAX_ATTEMPTS = 3;
@@ -60,7 +61,7 @@ function createDispatcher({ hub, taskio, pollMs = 3000, now = Date.now, log = ()
       for (const t of open.filter((x) => x.status === 'queued')) {
         const routine = t.source === 'routine' && !(t.priority > 0);                   // owner-requested (priority > 0) runs any time
         const candidates = devs.filter((d) => hub.aiCapable(d) && !usedDevices.has(d.id)
-          && (!routine || (d.stats && d.stats.model && d.stats.model.windowActive)));
+          && (!routine || (d.stats && d.stats.model && d.stats.model.windowActive) || hub.idleEnough(d)));
         if (!candidates.length) { waiting.push(t); continue; }
         const ready = candidates.filter((d) => hub.aiReady(d)).sort(hub.load);
         if (ready.length) {
