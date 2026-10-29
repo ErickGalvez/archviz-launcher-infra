@@ -112,6 +112,17 @@ prototype (PyQt6 + OpenGL) to this bridge, **read-only**: it never moves, rename
   Routes (Dev Console key): `GET /api/archive/status|runs|run?id|files?id&dir&group&kind&q`, `POST /api/archive/start|cancel|forget`.
 * **To go live:** restart the launcher once (Update & restart in the admin panel), restart the node agent once (`node bridge/node-agent.js`) so it loads `archivist.js`, then run `archive-allow.js`.
 
+## My Tasks (what only the owner can do)
+
+`bridge/ownertasks.js` stores the owner's own to-do list: things only a person can do (decide, approve, press a button on a machine, talk to someone), each with a priority (P0 now, P1 this week,
+P2 soon, P3 later), a due date, numbered steps with copyable commands, a "done when" line, links, a note and a history. It is not Task-IO (that records what the roles did). The page is
+`devconsole/my-tasks.html` ("My Tasks" in the console menus): a "Do this next" card, filters, steps you tick off, snooze, and tasks that repeat (daily, weekly, monthly).
+
+* **Stored on this PC, not in git:** `owner-tasks.json` beside `launcher-server.js` (gitignored, written through a temp file, read again on every request, so a hand edit or a restored copy needs no restart).
+  The tasks are private business to-dos, which is why they are not in the public website repo: the page only draws what the launcher returns, as text.
+* **Routes (Dev Console key):** `GET /api/owner/tasks`, `POST /api/owner/tasks/create|update|delete`. A link in a task can only be an https address or a page of the site.
+* **Back it up:** the page has a Backup button (a JSON file); the file is on the list of host-only data in the "back up" task.
+
 ## Security model (read this once)
 
 * Every request to an agent must be signed with `bridge.key` (HMAC-SHA256 over method, path, timestamp, nonce and body).
@@ -211,8 +222,9 @@ node bridge/fixnote.test.js       # 12 checks: diffs and pull request notes beco
 node bridge/reports.test.js       # 10 checks: reports (a set of tickets + a Working/Closed stamp that moves them)
 node bridge/archivist.test.js     # 28 checks: the Archivist's engine (what it never reads, links, duplicates, projects, slices, cancel, read-only)
 node bridge/archive.test.js       # 17 checks: the launcher side (pinned to PC-1, allowed folders, render pause, continuation, routes)
+node bridge/ownertasks.test.js    # 15 checks: the owner task list (status, history, snooze, repeat, hostile input, the routes and their key)
 node updater.test.js              # 21 checks: the admin panel's Update & restart, against real git (in the launcher folder, not bridge/)
-node bridge/bridge.mutation.js    # breaks 189 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive or GROUP=tickets one list)
+node bridge/bridge.mutation.js    # breaks 215 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive, GROUP=tickets or GROUP=owner one list)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
 
@@ -224,4 +236,4 @@ page served from `localhost`:
 ## Files that must stay out of git (already in `.gitignore`)
 
 `bridge/bridge.key` · `bridge/bridge-node.json` · `bridge.json` · `bridge/bridge.json` · `bridge/bridge-node-state.json` · `bridge-aliases.json` ·
-`bridge-reserved.json` · `routines-state.json` · `taskio-tasks.jsonl` · `taskio-eod.jsonl` · `bridge/dl|llama|models/` · `bridge/archive-data/` (the Archivist's catalogs of private files)
+`bridge-reserved.json` · `routines-state.json` · `taskio-tasks.jsonl` · `taskio-eod.jsonl` · `bridge/dl|llama|models/` · `owner-tasks.json` · `bridge/archive-data/` (the Archivist's catalogs of private files)

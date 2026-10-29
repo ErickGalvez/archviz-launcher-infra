@@ -17,6 +17,7 @@ const { createDispatcher } = require('./dispatcher');
 const { createRoutines } = require('./routines');
 const { createVerifier } = require('./verifier');
 const { createArchive } = require('./archive.js');
+const { createOwnerTasks } = require('./ownertasks.js');
 const { DEFAULT_WINDOW } = require('./schedule');
 const defaultPolicy = require('./policy');
 
@@ -33,6 +34,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
   // The hub needs the shared key. No key yet = the bridge is simply "not set up": device routes report that, Task-IO still works.
   const keyFile = process.env.G741_BRIDGE_KEY_FILE || path.join(dir, 'bridge', 'bridge.key');
   let hub = null, hubError = null, dispatcher = null, routines = null, routineTimer = null, archive = null;
+  const ownerTasks = createOwnerTasks({ dir, log });       // the owner's own to-do list (owner-tasks.json); no hub needed
   // Vera, the verifier: reads the repo checkouts named in bridge.json (verify.roots; the launcher's own folder by default) and writes verdicts onto tickets.
   const rootsOf = () => {
     const cfg = (readJson(path.join(dir, 'bridge.json'), {}).verify || {}).roots || {};
@@ -74,7 +76,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
 
   function handle(req, res, u) {
     const p = u.pathname;
-    if (!p.startsWith('/api/bridge/') && !p.startsWith('/api/taskio/') && !p.startsWith('/api/archive/')) return false;
+    if (!p.startsWith('/api/bridge/') && !p.startsWith('/api/taskio/') && !p.startsWith('/api/archive/') && !p.startsWith('/api/owner/')) return false;
     if (!isAuthed(req)) { json(res, 401, { ok: false, error: 'Unauthorized' }); return true; }
     const post = (fn) => { readBody(req, res, (b) => (b ? fn(b) : json(res, 400, { ok: false, error: 'Invalid body' }))); return true; };
     const needHub = () => { if (!hub) { json(res, 503, { ok: false, error: hubError }); return false; } return true; };
@@ -95,6 +97,16 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     if (p === '/api/bridge/routines' && req.method === 'GET') { if (!needHub()) return true; json(res, 200, { ok: true, window: windowCfg(), routines: routines.list() }); return true; }
     if (p === '/api/bridge/routines/run' && req.method === 'POST') return post((b) => { if (!needHub()) return; const r = routines.run(String(b.id || ''), { manual: true }); json(res, r.ok ? 200 : 400, r); });
     if (p === '/api/bridge/routines/toggle' && req.method === 'POST') return post((b) => { if (!needHub()) return; const r = routines.setEnabled(String(b.id || ''), !!b.enabled); json(res, r.ok ? 200 : 400, r); });
+
+    // ── The owner's own tasks: what only the owner can do, with the steps to do it. Behind the Dev Console key (checked above); the store is owner-tasks.json on this host. ──
+    if (p.startsWith('/api/owner/')) {
+      const run = (fn) => { try { const r = fn(); json(res, r.ok ? 200 : /no such/i.test(r.error || '') ? 404 : 400, r); } catch (e) { log('owner tasks: ' + e.message); json(res, 500, { ok: false, error: 'The task store could not be read or written.' }); } return true; };
+      if (req.method === 'GET' && p === '/api/owner/tasks') return run(() => ownerTasks.list());
+      if (req.method === 'POST' && p === '/api/owner/tasks/create') return post((b) => run(() => ownerTasks.create(b)));
+      if (req.method === 'POST' && p === '/api/owner/tasks/update') return post((b) => run(() => ownerTasks.update(String(b.id || ''), b.patch)));
+      if (req.method === 'POST' && p === '/api/owner/tasks/delete') return post((b) => run(() => ownerTasks.remove(String(b.id || ''))));
+      json(res, 404, { ok: false, error: 'Not found' }); return true;
+    }
 
     // ── the Archivist (secret department): scans of a folder on PC-1, read-only catalogs. All of it needs the Dev Console key (checked above). ──
     if (p.startsWith('/api/archive/')) {

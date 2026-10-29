@@ -14,7 +14,7 @@
 const path = require('path');
 
 // The files the running launcher has loaded: a change to any of them needs a restart. Tests, mutation lists, the node agent and the installers do not.
-const RESTART_FILES = ['launcher-server.js', 'updater.js', ...['index', 'hub', 'taskio', 'protocol', 'policy', 'routines', 'dispatcher', 'schedule', 'tickets', 'reports', 'verifier', 'fixnote', 'archive'].map((n) => 'bridge/' + n + '.js')];
+const RESTART_FILES = ['launcher-server.js', 'updater.js', ...['index', 'hub', 'taskio', 'protocol', 'policy', 'routines', 'dispatcher', 'schedule', 'tickets', 'reports', 'verifier', 'fixnote', 'archive', 'ownertasks'].map((n) => 'bridge/' + n + '.js')];
 
 const short = (s) => String(s || '').trim().slice(0, 7);
 const clip = (s, n) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n);

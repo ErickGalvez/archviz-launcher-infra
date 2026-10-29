@@ -64,3 +64,6 @@ bridge/models/
 bridge.json
 nightly-*.log
 nightly-*.state.json
+# The owner's own to-do list (private; the page reads it through the launcher with the Dev Console key)
+owner-tasks.json
+owner-tasks.json.tmp

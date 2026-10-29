@@ -66,7 +66,7 @@ const MUTATIONS = [
   ['a lead\'s e-mail reaches a prompt', 'routines.js', "Object.keys(l).filter((k) => k !== 'ts')", "Object.keys(l).filter((k) => k !== 'ts').concat([l.email])"],
   ['a request can choose its own lane', 'index.js', 'const lane = laneFor(defaultPolicy, area, false), title = String(b.title || prompt).slice(0, 80);', "const lane = (b.lane === 'cloud' ? 'cloud' : laneFor(defaultPolicy, area, false)), title = String(b.title || prompt).slice(0, 80);"],
   ['the prompt of a task is exposed through the API', 'taskio.js', 'const view = (t) => { const { job, remote, ...rest } = t;', 'const view = (t) => { const { remote, ...rest } = t;'],
-].concat(require('./tickets.mutations.js'), require('./archive.mutations.js'));          // the ticket model, Vera and the fix-note reader; the Archivist
+].concat(require('./tickets.mutations.js'), require('./archive.mutations.js'), require('./ownertasks.mutations.js'));          // the ticket model, Vera and the fix-note reader; the Archivist; the owner's task list
 
 const TESTS = ['bridge.test.js', 'coordinator.test.js', 'nightly.test.js', 'tickets.test.js', 'verifier.test.js', 'fixnote.test.js', 'reports.test.js'];
 const runOne = (dir, f) => new Promise((resolve) => {
@@ -75,9 +75,9 @@ const runOne = (dir, f) => new Promise((resolve) => {
   const t = setTimeout(() => { try { c.kill(); } catch (e) { /* gone */ } }, 150000);
   c.on('close', (code) => { clearTimeout(t); resolve({ code, out }); });
 });
-const GROUPS = [require('./tickets.mutations.js'), require('./archive.mutations.js')], TESTS_FOR = new Map();   // each group is caught by its own fast test files, so only those run for its mutations
+const GROUPS = [require('./tickets.mutations.js'), require('./archive.mutations.js'), require('./ownertasks.mutations.js')], TESTS_FOR = new Map();   // each group is caught by its own fast test files, so only those run for its mutations
 for (const g of GROUPS) for (const m of g) TESTS_FOR.set(m[0], g.TESTS);
-const GROUP_OF = new Map(); [['tickets', GROUPS[0]], ['archive', GROUPS[1]]].forEach(([n, g]) => g.forEach((m) => GROUP_OF.set(m[0], n)));      // GROUP=archive re-checks one list
+const GROUP_OF = new Map(); [['tickets', GROUPS[0]], ['archive', GROUPS[1]], ['owner', GROUPS[2]]].forEach(([n, g]) => g.forEach((m) => GROUP_OF.set(m[0], n)));      // GROUP=archive re-checks one list
 const runAll = async (dir, files = TESTS) => { const rs = await Promise.all(files.map((f) => runOne(dir, f))); return { red: rs.some((r) => r.code !== 0), out: rs.map((r) => r.out).join('\n') }; };
 const copy = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'g741-bridge-mut-')); for (const f of fs.readdirSync(__dirname)) if (/\.(js|ps1|bat)$/.test(f) && f !== 'bridge.mutation.js') fs.copyFileSync(path.join(__dirname, f), path.join(d, f)); return d; };
 
