@@ -120,7 +120,10 @@ P2 soon, P3 later), a due date, numbered steps with copyable commands, a "done w
 
 * **Stored on this PC, not in git:** `owner-tasks.json` beside `launcher-server.js` (gitignored, written through a temp file, read again on every request, so a hand edit or a restored copy needs no restart).
   The tasks are private business to-dos, which is why they are not in the public website repo: the page only draws what the launcher returns, as text.
-* **Routes (Dev Console key):** `GET /api/owner/tasks`, `POST /api/owner/tasks/create|update|delete`. A link in a task can only be an https address or a page of the site.
+* **Routes (Dev Console key):** `GET /api/owner/tasks`, `POST /api/owner/tasks/create|update|delete|import`. A link in a task can only be an https address or a page of the site.
+* **Import (a prepared list, or the page's Backup file):** `POST /api/owner/tasks/import` with `{ "tasks": [...] }`, at most 100 per request (the page sends a big file in batches). A new id is added; an id that is
+  already in the list is left exactly as it is, so your progress, notes and edits win and importing the same file twice changes nothing. Everything is cleaned like a task made in the page; from a backup the
+  progress comes back too (status, ticked steps, note, times, history), each piece checked. This is how a prepared list of owner-only tasks gets onto the PC without the tasks ever going into git.
 * **Back it up:** the page has a Backup button (a JSON file); the file is on the list of host-only data in the "back up" task.
 
 ## Security model (read this once)
@@ -222,9 +225,9 @@ node bridge/fixnote.test.js       # 12 checks: diffs and pull request notes beco
 node bridge/reports.test.js       # 10 checks: reports (a set of tickets + a Working/Closed stamp that moves them)
 node bridge/archivist.test.js     # 28 checks: the Archivist's engine (what it never reads, links, duplicates, projects, slices, cancel, read-only)
 node bridge/archive.test.js       # 17 checks: the launcher side (pinned to PC-1, allowed folders, render pause, continuation, routes)
-node bridge/ownertasks.test.js    # 15 checks: the owner task list (status, history, snooze, repeat, hostile input, the routes and their key)
+node bridge/ownertasks.test.js    # 20 checks: the owner task list (status, history, snooze, repeat, import of a list or a backup, hostile input, the routes and their key)
 node updater.test.js              # 21 checks: the admin panel's Update & restart, against real git (in the launcher folder, not bridge/)
-node bridge/bridge.mutation.js    # breaks 215 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive, GROUP=tickets or GROUP=owner one list)
+node bridge/bridge.mutation.js    # breaks 225 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive, GROUP=tickets or GROUP=owner one list)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
 

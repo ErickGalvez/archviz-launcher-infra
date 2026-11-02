@@ -30,6 +30,18 @@ module.exports = [
   ['a repeating task stays done', 'ownertasks.js', 'if (t.repeat) { t.status = \'snoozed\';', 'if (false) { t.status = \'snoozed\';'],
   ['a repeating task keeps its ticked steps', 'ownertasks.js', 't.checked = []; t.startedAt = null;', 't.startedAt = null;'],
 
+  // ── importing a list or a backup ──
+  ['an import overwrites a task that is already there', 'ownertasks.js', 'if (have.has(id)) { skipped.push(id); continue; }', ''],
+  ['an import takes any id', 'ownertasks.js', "if (!ID.test(id)) { refused.push(clip(id, 20) || '(no id)'); continue; }", ''],
+  ['an import skips the cleaning', 'ownertasks.js', 'const c = cleanContent(i, IMPORT_BASE);', 'const c = { ...IMPORT_BASE, ...i };'],
+  ['an imported task keeps any status', 'ownertasks.js', "const status = STATUSES.includes(i.status) ? i.status : 'todo'", "const status = i.status || 'todo'"],
+  ['an imported task keeps any origin', 'ownertasks.js', "origin: ORIGINS.includes(i.origin) ? i.origin : 'owner', status:", 'origin: i.origin, status:'],
+  ['an import ignores the size of the list', 'ownertasks.js', 'if (db.tasks.length >= MAX_TASKS) { refused.push(id); continue; }', ''],
+  ['an import takes any number of tasks at once', 'ownertasks.js', "if (input.length > MAX_IMPORT) return { ok: false,", "if (false) return { ok: false,"],
+  ['an imported backup keeps ticks of steps that do not exist', 'ownertasks.js', '.filter((n) => Number.isInteger(n) && n >= 0 && n < c.steps.length))', '.filter(() => true))'],
+  ['an imported time is taken as it is', 'ownertasks.js', 'const stamp = (x) => (Number.isFinite(x) && x > 1577836800000 && x < 4102444800000 ? Math.round(x) : null);', 'const stamp = (x) => x;'],
+  ['a snooze with no end is imported as snoozed', 'ownertasks.js', "status: status === 'snoozed' && !until ? 'todo' : status,", 'status,'],
+
   // ── the file, and who may reach it ──
   ['the list is written in place instead of through a temp file', 'ownertasks.js', "const tmp = file + '.tmp'; fs.writeFileSync(tmp, JSON.stringify({ version: 1, tasks: db.tasks }, null, 1)); fs.renameSync(tmp, file);", 'fs.writeFileSync(file, JSON.stringify({ version: 1, tasks: db.tasks }, null, 1));'],
   ['the task routes need no key', 'index.js', "!p.startsWith('/api/archive/') && !p.startsWith('/api/owner/')) return false;\n    if (!isAuthed(req)) {", "!p.startsWith('/api/archive/') && !p.startsWith('/api/owner/')) return false;\n    if (false) {"],

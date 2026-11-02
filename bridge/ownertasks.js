@@ -12,7 +12,7 @@ const STATUSES = ['todo', 'doing', 'blocked', 'done', 'snoozed'];
 const AREAS = ['launch', 'infra', 'agents', 'qa', 'sales', 'legal', 'security', 'content', 'money', 'build'];
 const ORIGINS = ['roadmap', 'owner', 'state', 'recommended'];
 const REPEATS = { daily: 1, weekly: 7, monthly: 30 };
-const MAX_TASKS = 300, MAX_STEPS = 40, MAX_HISTORY = 30, MAX_FILE = 2 * 1024 * 1024, DAY = 86400000;
+const MAX_TASKS = 300, MAX_STEPS = 40, MAX_HISTORY = 30, MAX_FILE = 2 * 1024 * 1024, DAY = 86400000, MAX_IMPORT = 100;
 const ID = /^OT-[A-Z0-9]{1,10}$/, DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const clip = (s, n) => String(s == null ? '' : s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, n);
@@ -44,6 +44,10 @@ function cleanContent(i, base = {}) {
   if (has('blockedBy')) out.blockedBy = (Array.isArray(i.blockedBy) ? i.blockedBy : []).filter((x) => ID.test(String(x))).slice(0, 5);
   return out;
 }
+
+// A time from a backup: a real epoch-milliseconds number between 2020 and 2100, or nothing.
+const stamp = (x) => (Number.isFinite(x) && x > 1577836800000 && x < 4102444800000 ? Math.round(x) : null);
+const IMPORT_BASE = { priority: 'P2', area: 'launch', due: null, est: '', why: '', before: [], steps: [], done: '', links: [], repeat: null, tags: [], blockedBy: [] };
 
 function createOwnerTasks({ dir, now = Date.now, log = () => {} }) {
   const file = path.join(dir, 'owner-tasks.json');
@@ -94,9 +98,35 @@ function createOwnerTasks({ dir, now = Date.now, log = () => {} }) {
     t.updatedAt = now(); save(db); return { ok: true, task: t };
   }
 
+  // Adds tasks from a prepared list or from the page's Backup file. A task whose id is already in the list is left exactly as it is (your progress, notes and
+  // edits win), so importing the same file twice changes nothing; a new id is added. The content goes through the same cleaning as a task made in the page;
+  // from a backup the progress comes back too (status, ticked steps, note, times, history), each piece checked. At most MAX_IMPORT tasks per request (the page
+  // sends a big file in batches) and never past MAX_TASKS.
+  function importTasks(input) {
+    if (!Array.isArray(input)) return { ok: false, error: 'tasks must be a list.' };
+    if (input.length > MAX_IMPORT) return { ok: false, error: 'At most ' + MAX_IMPORT + ' tasks per import: send the rest in another batch.' };
+    const db = load(), have = new Set(db.tasks.map((t) => t.id)), added = [], skipped = [], refused = [];
+    for (const i of input) {
+      const id = i && typeof i === 'object' ? String(i.id || '') : '';
+      if (!ID.test(id)) { refused.push(clip(id, 20) || '(no id)'); continue; }
+      if (have.has(id)) { skipped.push(id); continue; }
+      if (db.tasks.length >= MAX_TASKS) { refused.push(id); continue; }
+      const c = cleanContent(i, IMPORT_BASE);
+      if (!c.title) { refused.push(id); continue; }
+      const status = STATUSES.includes(i.status) ? i.status : 'todo', until = stamp(i.snoozeUntil);
+      const t = { ...c, id, origin: ORIGINS.includes(i.origin) ? i.origin : 'owner', status: status === 'snoozed' && !until ? 'todo' : status,
+        checked: [...new Set((Array.isArray(i.checked) ? i.checked : []).map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < c.steps.length))].sort((a, b) => a - b),
+        note: clip(i.note, 2000), snoozeUntil: status === 'snoozed' ? until : null, createdAt: stamp(i.createdAt) || now(), updatedAt: now(), startedAt: stamp(i.startedAt), doneAt: stamp(i.doneAt),
+        history: (Array.isArray(i.history) ? i.history : []).map((h) => ({ at: stamp(h && h.at), what: clip(h && h.what, 160) })).filter((h) => h.at && h.what) };      // note() below caps it
+      note(t, 'imported'); db.tasks.push(t); have.add(id); added.push(id);
+    }
+    if (added.length) save(db);
+    return { ok: true, added, skipped, refused };
+  }
+
   function remove(id) { const db = load(), n = db.tasks.length; db.tasks = db.tasks.filter((t) => t.id !== id); if (db.tasks.length === n) return { ok: false, error: 'No such task.' }; save(db); return { ok: true }; }
 
-  return { list, create, update, remove, file };
+  return { list, create, update, importTasks, remove, file };
 }
 
-module.exports = { createOwnerTasks, cleanContent, safeHref, PRIORITIES, STATUSES, AREAS, ORIGINS, REPEATS };
+module.exports = { createOwnerTasks, cleanContent, safeHref, PRIORITIES, STATUSES, AREAS, ORIGINS, REPEATS, MAX_IMPORT };
