@@ -112,10 +112,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:1
 .server-warn{background:var(--red-dim);border:0.5px solid rgba(196,92,74,0.3);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(--red);line-height:1.7;display:none;}
 
 .center-circle{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:50px;height:50px;border-radius:50%;background:hotpink;pointer-events:none;z-index:9999;}
+
+.corner-heart{position:fixed;right:20px;bottom:20px;width:40px;height:40px;fill:#ffd400;pointer-events:none;z-index:9999;}
 </style>
 </head>
 <body>
 <div class="center-circle"></div>
+<svg class="corner-heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
 <div class="wrap">
 
   <div class="header">
