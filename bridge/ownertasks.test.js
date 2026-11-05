@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const http = require('http');
 const path = require('path');
-const { createOwnerTasks, safeHref } = require('./ownertasks.js');
+const { createOwnerTasks, safeHref, MAX_IMPORT } = require('./ownertasks.js');
 const bridge = require('./index.js');
 
 const results = [];
@@ -77,6 +77,45 @@ const mk = (extra = {}) => { const dir = tmp(); let t = 1800000000000; const clo
     assert.equal(store.remove(a).ok, true); assert.deepEqual(store.list().tasks.map((t) => t.id), [b]); assert.equal(store.remove(a).ok, false); assert.equal(store.remove('../../x').ok, false);
   });
 
+  console.log('importing a prepared list or a backup');
+  await test('an import adds the new ids and leaves a task that is already there exactly as it is, so the same file twice changes nothing', () => {
+    const { store, clock } = mk(); const mine = store.create({ title: 'Mine', steps: ['a', 'b'] }).task;
+    store.update(mine.id, { status: 'doing', checked: [1], note: 'half way' }); clock.tick(1000);
+    const r = store.importTasks([{ id: 'OT-A01', title: 'Back up PC-1', priority: 'P0', origin: 'recommended', steps: [{ t: 'Copy', code: 'robocopy a b' }], done: 'a dated folder exists', repeat: 'weekly' },
+      { id: mine.id, title: 'Overwritten?', priority: 'P3', steps: [] }, { id: 'OT-A02', title: 'Second', area: 'sales' }]);
+    assert.equal(r.ok, true); assert.deepEqual(r.added, ['OT-A01', 'OT-A02']); assert.deepEqual(r.skipped, [mine.id]); assert.deepEqual(r.refused, []);
+    const all = store.list().tasks, kept = all.find((t) => t.id === mine.id), a = all.find((t) => t.id === 'OT-A01');
+    assert.equal(kept.title, 'Mine'); assert.equal(kept.status, 'doing'); assert.deepEqual(kept.checked, [1]); assert.equal(kept.note, 'half way'); assert.equal(kept.steps.length, 2);
+    assert.equal(a.priority, 'P0'); assert.equal(a.origin, 'recommended'); assert.equal(a.status, 'todo'); assert.equal(a.repeat, 'weekly'); assert.equal(a.steps[0].code, 'robocopy a b'); assert.equal(a.done, 'a dated folder exists'); assert.equal(a.history.slice(-1)[0].what, 'imported');
+    const again = store.importTasks([{ id: 'OT-A01', title: 'Back up PC-1' }, { id: 'OT-A02', title: 'Second' }]); assert.deepEqual(again.added, []); assert.deepEqual(again.skipped, ['OT-A01', 'OT-A02']); assert.equal(store.list().tasks.length, 3);
+  });
+  await test('an imported task is cleaned like one made in the page: no foreign ids, no links that run code, no unknown priority, origin or status', () => {
+    const { store } = mk();
+    const r = store.importTasks([{ id: '../x', title: 'bad id' }, { id: 'ot-lower', title: 'bad id' }, { title: 'no id' }, null, 7, { id: 'OT-NOTITLE', title: '  ' },
+      { id: 'OT-H1', title: '<b>x</b>', priority: 'urgent', origin: 'hacker', status: 'finished', links: [{ label: 'ok', href: 'https://example.com' }, { label: 'bad', href: 'javascript:alert(1)' }], steps: Array.from({ length: 90 }, (_, i) => 's' + i), why: 'w'.repeat(5000) },
+      { id: 'OT-H1', title: 'the same id again' }]);
+    assert.deepEqual(r.added, ['OT-H1']); assert.deepEqual(r.skipped, ['OT-H1'], 'a second copy of an id in the same file is skipped'); assert.equal(r.refused.length, 6);
+    const t = store.list().tasks[0]; assert.equal(t.title, '<b>x</b>'); assert.equal(t.priority, 'P2'); assert.equal(t.origin, 'owner'); assert.equal(t.status, 'todo'); assert.deepEqual(t.links.map((l) => l.label), ['ok']); assert.equal(t.steps.length, 40); assert.equal(t.why.length, 1400);
+    assert.equal(store.importTasks('x').ok, false); assert.equal(store.importTasks({ tasks: [] }).ok, false); assert.equal(store.importTasks(null).ok, false);
+  });
+  await test('a backup brings its progress back, each piece checked: status, ticked steps, note, times and a capped history', () => {
+    const { store, clock } = mk(), T = 1790000000000;
+    store.importTasks([{ id: 'OT-B1', title: 'from a backup', steps: ['a', 'b', 'c'], status: 'doing', checked: [2, 0, 9, -1, 'x', 0], note: 'n'.repeat(3000), createdAt: T, startedAt: T + 1000, doneAt: 'yesterday',
+      history: [...Array.from({ length: 50 }, (_, k) => ({ at: T + k, what: 'step ' + k })), { at: 'soon', what: 'bad time' }, { at: T, what: '' }, null] },
+      { id: 'OT-B2', title: 'snoozed', status: 'snoozed', snoozeUntil: clock.now() + 3 * DAY }, { id: 'OT-B3', title: 'snoozed without a time', status: 'snoozed' }, { id: 'OT-B4', title: 'times from nowhere', createdAt: -5, startedAt: 1e20 }]);
+    const [b1, b2, b3, b4] = ['OT-B1', 'OT-B2', 'OT-B3', 'OT-B4'].map((id) => store.list().tasks.find((t) => t.id === id));
+    assert.equal(b1.status, 'doing'); assert.deepEqual(b1.checked, [0, 2]); assert.equal(b1.note.length, 2000); assert.equal(b1.createdAt, T); assert.equal(b1.startedAt, T + 1000); assert.equal(b1.doneAt, null);
+    assert.ok(b1.history.length <= 30, 'the history is capped'); assert.ok(b1.history.every((h) => Number.isFinite(h.at) && h.what), 'no history line without a real time and text'); assert.equal(b1.history.slice(-1)[0].what, 'imported');
+    assert.equal(b2.status, 'snoozed'); assert.equal(b2.snoozeUntil, clock.now() + 3 * DAY); assert.equal(b3.status, 'todo', 'a snooze with no end comes back as to-do'); assert.equal(b3.snoozeUntil, null);
+    assert.equal(b4.createdAt, clock.now(), 'a time that cannot be real is replaced'); assert.equal(b4.startedAt, null);
+  });
+  await test('an import stops at the size of the list, and takes at most ' + MAX_IMPORT + ' tasks at a time', () => {
+    const { store } = mk();
+    assert.equal(store.importTasks(Array.from({ length: MAX_IMPORT + 1 }, (_, i) => ({ id: 'OT-X' + i, title: 't' + i }))).ok, false, 'one batch too many is refused whole'); assert.equal(store.list().tasks.length, 0);
+    for (let b = 0; b < 4; b++) store.importTasks(Array.from({ length: MAX_IMPORT }, (_, i) => ({ id: 'OT-X' + (b * MAX_IMPORT + i), title: 't' }))); assert.equal(store.list().tasks.length, 300);
+    const r = store.importTasks([{ id: 'OT-LAST', title: 'one more' }]); assert.deepEqual(r.added, []); assert.deepEqual(r.refused, ['OT-LAST']);
+  });
+
   console.log('hostile input');
   await test('a link may only be an https address or a page of this site: nothing that runs code or leaves by a protocol-relative address', () => {
     for (const ok of ['https://example.com/a?b=c', '../qa/qa-dashboard.html#fixqueue', 'archive.html', './team.html?report=rep_1']) assert.equal(safeHref(ok), ok, ok);
@@ -102,7 +141,7 @@ const mk = (extra = {}) => { const dir = tmp(); let t = 1800000000000; const clo
   await new Promise((r) => srv.listen(0, '127.0.0.1', r)); const base = 'http://127.0.0.1:' + srv.address().port;
   const api = async (m, p, b, key = 'k') => { const r = await fetch(base + p, { method: m, headers: { 'x-devconsole-key': key, ...(b !== undefined ? { 'Content-Type': 'application/json' } : {}) }, body: b !== undefined ? (typeof b === 'string' ? b : JSON.stringify(b)) : undefined, signal: AbortSignal.timeout(5000) }); return { status: r.status, json: await r.json().catch(() => null) }; };
   await test('every route is closed without the Dev Console key, and to a wrong one', async () => {
-    for (const [m, p] of [['GET', '/api/owner/tasks'], ['POST', '/api/owner/tasks/create'], ['POST', '/api/owner/tasks/update'], ['POST', '/api/owner/tasks/delete']]) for (const key of ['wrong', '']) assert.equal((await api(m, p, m === 'POST' ? {} : undefined, key)).status, 401, m + ' ' + p);
+    for (const [m, p] of [['GET', '/api/owner/tasks'], ['POST', '/api/owner/tasks/create'], ['POST', '/api/owner/tasks/update'], ['POST', '/api/owner/tasks/delete'], ['POST', '/api/owner/tasks/import']]) for (const key of ['wrong', '']) assert.equal((await api(m, p, m === 'POST' ? {} : undefined, key)).status, 401, m + ' ' + p);
     assert.equal(fs.existsSync(path.join(dir, 'owner-tasks.json')), false, 'nothing was written by the refused calls');
   });
   await test('make, change, list and delete a task through the routes; the list carries the steps and the history', async () => {
@@ -112,8 +151,15 @@ const mk = (extra = {}) => { const dir = tmp(); let t = 1800000000000; const clo
     assert.equal((await api('POST', '/api/owner/tasks/update', { id: 'OT-NOPE', patch: { status: 'done' } })).status, 404); assert.equal((await api('POST', '/api/owner/tasks/update', { id, patch: { status: 'weird' } })).status, 400); assert.equal((await api('POST', '/api/owner/tasks/create', { title: '' })).status, 400);
     assert.equal((await api('POST', '/api/owner/tasks/delete', { id })).status, 200); assert.equal((await api('POST', '/api/owner/tasks/delete', { id })).status, 404);
   });
+  await test('a prepared list goes in through the import route, again changes nothing, and a body that is not a list is a 400', async () => {
+    const r = await api('POST', '/api/owner/tasks/import', { tasks: [{ id: 'OT-R1', title: 'Via import', priority: 'P0', steps: ['one'] }, { id: 'OT-R2', title: 'Two' }] }); assert.equal(r.status, 200); assert.deepEqual(r.json.added, ['OT-R1', 'OT-R2']);
+    const again = await api('POST', '/api/owner/tasks/import', { tasks: [{ id: 'OT-R1', title: 'changed?' }] }); assert.equal(again.status, 200); assert.deepEqual(again.json.skipped, ['OT-R1']);
+    assert.equal((await api('GET', '/api/owner/tasks')).json.tasks.find((t) => t.id === 'OT-R1').title, 'Via import');
+    assert.equal((await api('POST', '/api/owner/tasks/import', { tasks: 'x' })).status, 400); assert.equal((await api('POST', '/api/owner/tasks/import', {})).status, 400);
+    for (const id of ['OT-R1', 'OT-R2']) await api('POST', '/api/owner/tasks/delete', { id });
+  });
   await test('hostile bodies never crash a route, leave it hanging, or reach another file; an unknown owner route is a 404', async () => {
-    for (const p of ['/api/owner/tasks/create', '/api/owner/tasks/update', '/api/owner/tasks/delete']) for (const b of ['{', 'null', '[]', '"x"', '{"id":["a"],"patch":"x"}', '{"id":"../../x","patch":{"status":"done"}}', '{"title":{"a":1}}', '{"__proto__":{"polluted":true},"title":"p"}']) { const r = await api('POST', p, b); assert.ok(r.status < 500, p + ' ' + b + ' -> ' + r.status); }
+    for (const p of ['/api/owner/tasks/create', '/api/owner/tasks/update', '/api/owner/tasks/delete', '/api/owner/tasks/import']) for (const b of ['{', 'null', '[]', '"x"', '{"id":["a"],"patch":"x"}', '{"id":"../../x","patch":{"status":"done"}}', '{"title":{"a":1}}', '{"__proto__":{"polluted":true},"title":"p"}']) { const r = await api('POST', p, b); assert.ok(r.status < 500, p + ' ' + b + ' -> ' + r.status); }
     assert.equal(({}).polluted, undefined); assert.equal((await api('GET', '/api/owner/nope')).status, 404); assert.equal((await api('DELETE', '/api/owner/tasks')).status, 404);
     const big = await fetch(base + '/api/owner/tasks/create', { method: 'POST', headers: { 'x-devconsole-key': 'k', 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'x'.repeat(200000) }), signal: AbortSignal.timeout(5000) }).then((r) => r.status).catch(() => 'closed'); assert.ok(big === 400 || big === 413 || big === 'closed', 'an oversize body is refused: ' + big);
   });

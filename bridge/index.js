@@ -105,6 +105,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
       if (req.method === 'POST' && p === '/api/owner/tasks/create') return post((b) => run(() => ownerTasks.create(b)));
       if (req.method === 'POST' && p === '/api/owner/tasks/update') return post((b) => run(() => ownerTasks.update(String(b.id || ''), b.patch)));
       if (req.method === 'POST' && p === '/api/owner/tasks/delete') return post((b) => run(() => ownerTasks.remove(String(b.id || ''))));
+      if (req.method === 'POST' && p === '/api/owner/tasks/import') return post((b) => run(() => ownerTasks.importTasks(b.tasks)));
       json(res, 404, { ok: false, error: 'Not found' }); return true;
     }
 
