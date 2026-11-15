@@ -86,7 +86,13 @@ if (fs.existsSync(QA_KEY_FILE)) {
   QA_KEY = crypto.randomBytes(24).toString('hex');
   fs.writeFileSync(QA_KEY_FILE, QA_KEY);
 }
+// Passes from the G741 app (passes.js): a website page on PC-1 sends one where it used to send the QA or Dev Console key, and each pass opens only
+// its own scope. Loaded like the updater: without passes.js only the real keys work.
+let passes = null;
+try { passes = require('./passes.js').createPasses({ file: path.join(BAT_DIR, 'passes.json') }); } catch (e) { console.error('Passes not loaded: ' + e.message); }
+
 function isQaAuthed(req) {
+  if (passes && passes.valid(req.headers['x-qa-key'], 'qa')) return true;                  // a QA pass from the G741 app
   return req.headers['x-qa-key'] === QA_KEY;
 }
 
@@ -1355,6 +1361,7 @@ if (fs.existsSync(DEVCONSOLE_KEY_FILE)) {
   fs.writeFileSync(DEVCONSOLE_KEY_FILE, DEVCONSOLE_KEY);
 }
 function isDevConsoleAuthed(req) {
+  if (passes && passes.valid(req.headers['x-devconsole-key'], 'devconsole')) return true;  // a Dev Console pass from the G741 app
   return req.headers['x-devconsole-key'] === DEVCONSOLE_KEY;
 }
 
@@ -1606,8 +1613,15 @@ function readJsonBody(req) {
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, x-qa-key, x-devconsole-key',
+  'Access-Control-Allow-Headers': 'Content-Type, x-qa-key, x-devconsole-key, x-g741-pass',
 };
+
+// A request made on this PC itself, not one that came through the Cloudflare tunnel (whose connector is also local, but Cloudflare stamps cf-ray on
+// everything that crossed its edge, the same mark the admin panel's gate uses).
+function isLocalDirect(req) {
+  const peer = req.socket.remoteAddress || '';
+  return (peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1') && !req.headers['cf-ray'] && !req.headers['cf-connecting-ip'];
+}
 
 // ── BRIDGE — device manager + Task-IO ────────────────────────────
 // Lives in ./bridge/ (see bridge/README.md). Reuses this file's Dev Console key
@@ -1660,7 +1674,7 @@ const server = http.createServer((req, res) => {
   // UE5/Wilbur pair before relaunching, so left open, anyone on the internet
   // could cut a live visitor's session off with one request. The public flow
   // never calls it over HTTP - startTurn() calls launchPS() directly.
-  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set', '/api/update/status', '/api/update/apply'];
+  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set', '/api/pass/revoke-all', '/api/update/status', '/api/update/apply'];
   if (ADMIN_ROUTES.includes(parsedUrl.pathname) && !isAdmin(req, parsedUrl)) {
     res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
@@ -1670,6 +1684,41 @@ const server = http.createServer((req, res) => {
     res.writeHead(401);
     res.end('Unauthorized');
     return;
+  }
+
+  // ── PASSES — the G741 app signs a website page in with a pass instead of a typed key (passes.js) ──
+  // Issued only on this PC (never through Cloudflare) and only for the REAL key of that scope, so a pass can never mint another pass.
+  if (parsedUrl.pathname.startsWith('/api/pass/')) {
+    const passJson = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify(obj)); };
+    if (!passes) { passJson(503, { ok: false, error: 'Passes are not loaded on this host (passes.js).' }); return; }
+    if (parsedUrl.pathname === '/api/pass/issue' && req.method === 'POST') {
+      if (!isLocalDirect(req)) { passJson(403, { ok: false, error: 'Passes are issued only on this PC, by the G741 app.' }); return; }
+      readJsonBody(req).then((b) => {
+        const scope = b && typeof b.scope === 'string' ? b.scope : '';
+        const realKey = { devconsole: () => req.headers['x-devconsole-key'] === DEVCONSOLE_KEY, qa: () => req.headers['x-qa-key'] === QA_KEY, owner: () => req.headers['x-admin-key'] === ADMIN_KEY };
+        if (!Object.prototype.hasOwnProperty.call(realKey, scope)) { passJson(400, { ok: false, error: 'Unknown scope' }); return; }
+        if (!realKey[scope]()) { passJson(401, { ok: false, error: 'Unauthorized' }); return; }
+        const p = passes.issue(scope);
+        addLog('lobby', 'G741 app: a ' + scope + ' pass was issued (12 hours).', 'info');
+        passJson(200, { ok: true, pass: p.pass, scope: p.scope, expiresAt: p.expiresAt });
+      }).catch(() => passJson(400, { ok: false, error: 'Invalid JSON body' }));
+      return;
+    }
+    if (parsedUrl.pathname === '/api/pass/check' && req.method === 'GET') {        // Cortex asks this: is my owner pass still good?
+      const p = passes.check(req.headers['x-g741-pass']);
+      passJson(p ? 200 : 401, p ? { ok: true, scope: p.scope, expiresAt: p.expiresAt } : { ok: false, error: 'No valid pass' });
+      return;
+    }
+    if (parsedUrl.pathname === '/api/pass/revoke' && req.method === 'POST') {      // a page signing itself out: ends only the pass it holds
+      passJson(200, { ok: true, revoked: passes.revoke(req.headers['x-g741-pass']) });
+      return;
+    }
+    if (parsedUrl.pathname === '/api/pass/revoke-all' && req.method === 'POST') {  // admin key (ADMIN_ROUTES): the app's "Sign out every page"
+      const n = passes.revokeAll();
+      addLog('lobby', 'G741 app: every page was signed out (' + n + ' pass' + (n === 1 ? '' : 'es') + ').', 'info');
+      passJson(200, { ok: true, revoked: n });
+      return;
+    }
   }
 
   // ── QA TEST CASE API — read is public, writes need x-qa-key ──

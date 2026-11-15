@@ -108,6 +108,32 @@ Start-ScheduledTask -TaskName ArchViz-Listener
 
 Or in Task Scheduler: **ArchViz-Listener** → right-click → **Enable**, then **Run**. Nothing else changes: the files, keys and logs are the same ones.
 
+### Signing in to the website with the G741 app (passes)
+
+Every key prompt on the website offers **Sign in with G741 Launcher** first. That covers:
+- Dev Console, Sales, Devices, Task-IO, Team, Archive and My Tasks (the Dev Console key)
+- the QA console (the QA key)
+- Cortex's gate (the owner)
+
+The real keys stay in the app's vault. Here is what happens:
+
+1. The page asks the app on this PC (`http://127.0.0.1:47741/v1/pass`) for one scope: `devconsole`, `qa` or `owner`.
+2. The app pops up its own sign-in window: Windows Hello inside the app, or Google through the browser.
+3. On approval, the app asks the launcher for a pass (`POST /api/pass/issue`), with the real key of that scope.
+4. The page keeps the pass where it used to keep the key, and sends it in the same header.
+
+The rules (`passes.js`):
+- A pass opens only its own console, never the admin routes. An owner pass only opens Cortex.
+- It lasts 12 hours. At most 20 are live per scope.
+- It is issued only on this PC (never through Cloudflare), and only for the real key, so a pass cannot make another pass.
+- Only a hash of each pass is kept, in `passes.json` (gitignored), so a restart signs nobody out.
+
+To sign every page out, the app calls `POST /api/pass/revoke-all` with the admin key. A typed key, and Cortex's Google button, still work on a PC without the app.
+
+The first time, the browser may ask to let `g-741studio.com` talk to apps on this device. Allow it.
+
+Tests: `node passes.test.js` (15 checks). The website's `pass-routes`, `pass-client` and `pass-flow` checks cover the routes, the pages, and the passes end to end.
+
 ### The old panel (`http://localhost:3000`), deprecated
 
 `launcher-client.html` still works on PC-1 until **31 December 2026**, under a banner that says so. As before, it answers 404 through Cloudflare, because the page has the admin key in it. Opening it still starts a stream, as it always did. Use the app instead.
@@ -126,6 +152,7 @@ The button then reads **Update & restart (N)**, **Update (N, no restart needed)*
 - It exits the process, and the watchdog starts it again about 5 seconds later. On PC-1 the watchdog is the G741 app; after a rollback (above) it is `listener_service.bat`. Neither the app's window nor the panel reloads itself afterwards (loading the old panel starts a stream). They wait until `/api/status` answers again.
 - `sync_repo.ps1` (the **ArchViz-Sync** task) stops `launcher-server.js` after a pull the same way and relies on the same watchdog to bring it back.
 - Needs the admin key (`/api/update/status`, `/api/update/apply`). Tests: `node updater.test.js` (real git, 21 checks), `node updater.mutation.js`.
+- A restart keeps every page signed in: the passes' hashes are in `passes.json`.
 
 ### From the Dev Console (Launchers card)
 
