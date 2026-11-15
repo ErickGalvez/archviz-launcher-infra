@@ -26,6 +26,7 @@ module.exports = {
     compliance: 'local',
     verify: 'local',        // Vera checks fixes with the local model: the code she reads and the notes she writes stay on our PCs
     archive: 'local',       // the Archivist (secret department) reads the owner's private files with the local model on PC-1: nothing about them may ever leave the machine
+    architecture: 'local',  // Arlo (advises on plans and design intent) and Tess (Revit -> FBX -> UE5): the client's plans and models stay on our PCs. Local by the owner's choice, not confidential
   },
   confidentialAreas: ['legal', 'compliance', 'sales', 'strategy', 'security', 'management', 'archive'],
 };
