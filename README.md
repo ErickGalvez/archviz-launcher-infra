@@ -89,6 +89,22 @@ The admin panel (`http://localhost:3000`, local only) has a **Launcher software*
 - It exits the process and `listener_service.bat` relaunches it about 5 seconds later. The panel does not reload itself afterwards (loading the panel starts a stream).
 - Needs the admin key (`/api/update/status`, `/api/update/apply`). Tests: `node updater.test.js` (real git, 21 checks), `node updater.mutation.js`.
 
+### From the Dev Console (Launchers card)
+
+The website's Dev Console has **Restart All Launchers**, **Restart PC 1**, **Restart PC 2** and **Start Agents** (`remote-restart.js`; Dev Console key):
+
+| Button | Route | What happens |
+|---|---|---|
+| Restart PC 1 | `POST /api/devconsole/restart-launchers` `{ "pc": 1 }` | This launcher restarts through the same updater as the panel (fast-forward pull, checks, rollback), then PC 1's node agent restarts on the new code |
+| Restart PC 2 | `{ "pc": 2 }` | PC 2's node agent restarts (PC 2 has no launcher; it is the AI worker). Its folder is a copy, so this reloads it, it does not update it |
+| Restart All | `{}` | PC 2's agent, then PC 1 as above |
+| Start Agents | `POST /api/devconsole/start-agents` | The local model starts on every PC that is free (not rendering, not reserved); one that already runs it is left alone |
+
+- A live session (a stream, a turn, a queue, someone in the room) refuses Restart PC 1 and Restart All with a 409; it is never forced from the console. Restart PC 2 does not touch the session.
+- A node agent restarts only when it runs under `bridge\start-node.bat` (which passes `--supervised` and starts it again 5 seconds later) and has no job running; started by hand, it says so instead.
+- One restart every 20 seconds and one model start every 10 seconds. Nothing from the request reaches a command: only which PC.
+- Tests: `node remote-restart.test.js` (11 checks), `node remote-restart.mutation.js`; the agent and hub side are in `bridge/bridge.test.js`.
+
 ## Stopping the stream
 
 - Close the UE5 window (or the command prompt titled "UE5 PixelStream")

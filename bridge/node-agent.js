@@ -60,7 +60,8 @@ function createAgent(opts) {
     id = crypto.randomBytes(6).toString('hex'), pendingRamGB = 0, discovery = true, statsMs = 2000, log = () => {}, gpuProvider = readGpu,
     hwPatch = null, statsPatch = null,   // hwPatch / statsPatch: only used by tests and the demo server to impersonate other hardware
     llama = null, nightly = undefined, idleMinutes = 15, supervisor: injected = null,   // the ONE local model server this PC may run (from bridge-node.json)
-    render = {}, statePath = null, archiveCfg = () => (opts.archive || {}), archiveDir = null, archiveSliceMs = 0 } = opts;   // archiveCfg: THIS PC's { enabled, roots }, read again for every request so an edit of the config applies at once
+    render = {}, statePath = null, archiveCfg = () => (opts.archive || {}), archiveDir = null, archiveSliceMs = 0,   // archiveCfg: THIS PC's { enabled, roots }, read again for every request so an edit of the config applies at once
+    exit = null, restartDelayMs = 300 } = opts;   // exit: how this process ends so start-node.bat's loop starts it again (set only with --supervised); null = it cannot restart itself
   if (!key) throw new Error('agent needs a key');
   const llamaUrl = opts.llamaUrl || ('http://127.0.0.1:' + ((llama && llama.port) || 8097));
   const renderCfg = { enabled: render.enabled !== false, ports: Array.isArray(render.ports) ? render.ports.filter(Number.isInteger) : [8888], canRender: render.canRender !== false };
@@ -68,7 +69,7 @@ function createAgent(opts) {
   const guard = new P.ReplayGuard();
   const peers = new Map();
   const jobs = new Map(), queue = [];
-  let running = null, server = null, sock = null, timers = [];
+  let running = null, server = null, sock = null, timers = [], restarting = false;
   const sampleCpu = makeCpuSampler();
   const state = { gpu: null, cpuPct: 0, llmUp: false, hwGpu: null, renderProbe: false, hintUntil: 0, reserved: false };
   const supervisor = injected || (llama ? createSupervisor({ llama: { ...llama, alias: model }, window: nightly, idleMinutes, log }) : null);
@@ -226,6 +227,17 @@ function createAgent(opts) {
         }
         return send(404, { ok: false, error: 'not found' });
       }
+      // Restart this agent (the Dev Console's Launchers card, through the hub). Only when it runs under start-node.bat's loop, which starts it again about
+      // 5 s later, and never under a job. Nothing in the request is read: it cannot carry a file, a command or an argument.
+      if (req.method === 'POST' && p === '/v1/restart') {
+        if (!exit) return send(409, { ok: false, error: 'this agent was started by hand, so it would not come back: start it with start-node.bat' });
+        if (running || queue.length) return send(409, { ok: false, error: 'busy: a job is running on this PC' });
+        if (!restarting) {
+          restarting = true; log('restart requested by the hub: back in about 5 seconds');
+          setTimeout(() => { stop().catch(() => {}).then(() => exit()); }, restartDelayMs);   // stop first: never leave a model this agent started running unattended
+        }
+        return send(200, { ok: true, restarting: true });
+      }
       // The only controls the network has over this PC's model and render state. None of them can name a file, a command or an argument.
       if (req.method === 'POST' && (p === '/v1/model' || p === '/v1/reserve' || p === '/v1/hint')) {
         let b; try { b = JSON.parse(body || '{}'); } catch (e) { return send(400, { ok: false, error: 'invalid JSON' }); }
@@ -346,7 +358,9 @@ function main() {
   const cfg = fs.existsSync(cfgFile) ? readConfig(cfgFile) : {};
   const key = P.loadKey(keyFile);
   // The Archivist's settings are re-read from this file for every request: adding a folder with archive-allow.js needs no restart.
-  const agent = createAgent({ ...cfg, key, statePath: path.join(path.dirname(cfgFile), 'bridge-node-state.json'), archiveCfg: () => { try { return readConfig(cfgFile).archive || {}; } catch (e) { return {}; } }, archiveDir: path.join(path.dirname(cfgFile), 'archive-data'), log: (m) => console.log(new Date().toISOString().slice(11, 19) + ' ' + m) });
+  // --supervised: start-node.bat runs this in a loop that starts it again after it exits, so the hub may ask it to restart. Started by hand, it may not.
+  const agent = createAgent({ ...cfg, key, statePath: path.join(path.dirname(cfgFile), 'bridge-node-state.json'), archiveCfg: () => { try { return readConfig(cfgFile).archive || {}; } catch (e) { return {}; } }, archiveDir: path.join(path.dirname(cfgFile), 'archive-data'), log: (m) => console.log(new Date().toISOString().slice(11, 19) + ' ' + m),
+    exit: args.includes('--supervised') ? () => process.exit(0) : null });
   agent.start().then((p) => {
     console.log(`G741 bridge node "${cfg.alias || os.hostname()}" listening on :${p}  (key fingerprint ${P.fingerprint(key)}, discovery ${cfg.discoveryPort || 7412}/udp)`);
     console.log('If Windows asks, allow Node.js on PRIVATE networks only. Ctrl+C to stop.');

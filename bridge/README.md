@@ -195,6 +195,15 @@ reserve PC-1 for rendering.
 * **Load / unload model** — manual control; *Unload* is honoured for an hour even at night.
 * **Queue** — what's waiting, running or done, and where. **Routines** — run one now, or switch one off.
 
+The Dev Console's **Launchers** card can also restart a PC's node agent and start the model on every free PC at once (see "From the Dev Console" in the launcher's README):
+the hub sends the agent a signed `POST /v1/restart`, and the agent restarts only if it runs under `start-node.bat` (`--supervised`) and has no job running.
+Once, after this update:
+* **PC-1:** close the `start-node.bat` window and start it again, so the agent runs with `--supervised`.
+* **PC-2:** on PC-1 run `node bridge/node-agent.js --export-bundle D:\g741-bridge-new` (an empty folder) and copy `node-agent.js` and `start-node.bat` from it over the ones on PC-2
+  (keep PC-2's own `bridge-node.json` and `bridge.key`; delete the new folder afterwards, it holds the key), then sign out of PC-2 and back in (the agent starts at logon).
+
+Until then that PC's restart says "started by hand", and nothing else changes.
+
 ## The local model on each PC
 
 One `llama-server` per PC (default port **8097**), shared by all that PC's roles (one GPU = one inference at a time). The
@@ -216,7 +225,7 @@ It was scheduled with a self-deleting Task Scheduler entry (`G741-Nightly-Once-<
 ## Tests
 
 ```
-node bridge/bridge.test.js        # 28 checks: signing, replay, routing, two agents + hub, Task-IO
+node bridge/bridge.test.js        # 34 checks: signing, replay, routing, two agents + hub, remote restart and start agents, Task-IO
 node bridge/coordinator.test.js   # 33 checks: render awareness, nightly model, dispatcher, routines, hostile input, installer
 node bridge/nightly.test.js       # 7 checks: the one-off cloud-lane nightly against a mock launcher
 node bridge/tickets.test.js       # 22 checks: the ticket model, fix notes, verdicts, the fix queue, what is private
@@ -227,7 +236,7 @@ node bridge/archivist.test.js     # 28 checks: the Archivist's engine (what it n
 node bridge/archive.test.js       # 17 checks: the launcher side (pinned to PC-1, allowed folders, render pause, continuation, routes)
 node bridge/ownertasks.test.js    # 20 checks: the owner task list (status, history, snooze, repeat, import of a list or a backup, hostile input, the routes and their key)
 node updater.test.js              # 21 checks: the admin panel's Update & restart, against real git (in the launcher folder, not bridge/)
-node bridge/bridge.mutation.js    # breaks 225 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive, GROUP=tickets or GROUP=owner one list)
+node bridge/bridge.mutation.js    # breaks 233 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive, GROUP=tickets, GROUP=owner or GROUP=remote one list)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
 
