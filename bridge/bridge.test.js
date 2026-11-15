@@ -84,7 +84,11 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
   console.log('routing policy');
   await test('dev and qa go to the cloud lane; everything else stays local', () => {
     for (const a of ['dev', 'qa']) assert.equal(laneFor(policy, a, false), 'cloud');
-    for (const a of ['legal', 'compliance', 'marketing', 'strategy', 'sales', 'design', 'copy', 'security', 'management', 'unknown-area']) assert.equal(laneFor(policy, a, false), 'local', a);
+    for (const a of ['legal', 'compliance', 'marketing', 'strategy', 'sales', 'design', 'copy', 'security', 'management', 'architecture', 'unknown-area']) assert.equal(laneFor(policy, a, false), 'local', a);
+  });
+  await test('the architecture area (Arlo, Tess) is named in the table as local, and is not on the confidential list', () => {
+    assert.equal(policy.lanes.architecture, 'local');   // named, not left to the default, so the 3D page's mirror in team-data.js matches it
+    assert.ok(!policy.confidentialAreas.includes('architecture'));
   });
   await test('confidential work can never reach the cloud, even if the policy table is edited to say so', () => {
     const tampered = { defaultLane: 'cloud', lanes: { legal: 'cloud', compliance: 'cloud', sales: 'cloud', dev: 'cloud' }, confidentialAreas: policy.confidentialAreas };
