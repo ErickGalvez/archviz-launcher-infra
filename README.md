@@ -78,15 +78,53 @@ Chrome or Edge recommended. No plugins needed. The stream starts automatically.
 
 ---
 
+## Running the launcher: the G741 app
+
+On PC-1 the **G741 Launcher** desktop app is the launcher's control panel, and it also runs `launcher-server.js`. There is one program to open.
+
+- **Install it** from Cortex (**G741 Launcher (Windows app)**, owner sign-in), open it and unlock it. The first time, import the keys from this folder (`admin.key` with the others). They go into the app's Windows-encrypted vault.
+- **The Launcher tab** has everything the old `http://localhost:3000` panel had:
+  - Pixel Streaming: start, stop, Stop all, Free session, and Cloudflare tunnel on launch
+  - the tunnel URL, with copy and open-in-browser
+  - the live log
+  - Launcher software: Update & restart, Check now, Reset all
+- **The app runs the server.** It starts `node launcher-server.js` in this folder, appends its output to `launcher-server.log`, and starts it again 5 seconds after any exit. That is the same loop `listener_service.bat` ran.
+- **Closing the window does not stop the server.** The app stays in the tray, and only **Quit** in the tray menu stops it. While the app is not running, the website's API and the lobby are down. The Launcher tab says so plainly when the server is down.
+- **Taking over from `listener_service.bat`:**
+  - If port 3000 already answers when the app starts (the old `ArchViz-Listener` scheduled task is still running it), the app says so and does not start a second copy.
+  - **Take over from listener_service.bat** in the Launcher tab asks first, then disables that scheduled task. It never deletes it.
+  - Disabling the task does not end the copy it is already running. Restart the PC (or end that copy), then open the app: its copy is then the only one.
+
+### Rolling back to listener_service.bat
+
+Turn the scheduled task on again, then quit the app (tray → Quit) so the two do not compete for port 3000:
+
+```powershell
+Enable-ScheduledTask -TaskName ArchViz-Listener
+```
+```powershell
+Start-ScheduledTask -TaskName ArchViz-Listener
+```
+
+Or in Task Scheduler: **ArchViz-Listener** → right-click → **Enable**, then **Run**. Nothing else changes: the files, keys and logs are the same ones.
+
+### The old panel (`http://localhost:3000`), deprecated
+
+`launcher-client.html` still works on PC-1 until **31 December 2026**, under a banner that says so. As before, it answers 404 through Cloudflare, because the page has the admin key in it. Opening it still starts a stream, as it always did. Use the app instead.
+
 ## Updating and restarting the launcher
 
-The admin panel (`http://localhost:3000`, local only) has a **Launcher software** box under the log. It says how many changes are ahead of the code this launcher started with
-(whether they were pushed from another PC or committed in this checkout), lists their titles, and says whether the launcher itself changed. The button then reads
-**Update & restart (N)**, **Update (N, no restart needed)** for tests/docs-only changes, or **Restart launcher** when nothing is new.
+Use the **Launcher software** box in the G741 app's **Launcher** tab. The deprecated panel at `http://localhost:3000` has the same box under its log, until it is removed. The box says:
+- how many changes are ahead of the code this launcher started with, whether they were pushed from another PC or committed in this checkout
+- their titles
+- whether the launcher itself changed
+
+The button then reads **Update & restart (N)**, **Update (N, no restart needed)** for tests/docs-only changes, or **Restart launcher** when nothing is new.
 
 - It pulls fast-forward only, checks that the new `launcher-server.js` and the bridge load, and rolls the pull back (no restart) if they do not.
-- A running stream, a turn, a queue or someone in the room blocks it; the panel asks before cutting that off.
-- It exits the process and `listener_service.bat` relaunches it about 5 seconds later. The panel does not reload itself afterwards (loading the panel starts a stream).
+- A running stream, a turn, a queue or someone in the room blocks it; the app (and the panel) asks before cutting that off.
+- It exits the process, and the watchdog starts it again about 5 seconds later. On PC-1 the watchdog is the G741 app; after a rollback (above) it is `listener_service.bat`. Neither the app's window nor the panel reloads itself afterwards (loading the old panel starts a stream). They wait until `/api/status` answers again.
+- `sync_repo.ps1` (the **ArchViz-Sync** task) stops `launcher-server.js` after a pull the same way and relies on the same watchdog to bring it back.
 - Needs the admin key (`/api/update/status`, `/api/update/apply`). Tests: `node updater.test.js` (real git, 21 checks), `node updater.mutation.js`.
 
 ### From the Dev Console (Launchers card)

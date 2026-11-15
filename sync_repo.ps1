@@ -13,8 +13,9 @@
 #
 #  On a real change, it kills launcher-server.js's node process by
 #  its exact command line (same precise-PID pattern used everywhere
-#  else on this host) rather than anything broader - listener_service.bat's
-#  own retry loop relaunches it fresh with the new code within seconds.
+#  else on this host) rather than anything broader - its watchdog (the
+#  G741 app's server supervisor on PC-1, or listener_service.bat's own
+#  retry loop) relaunches it fresh with the new code within seconds.
 #  This is the same effect the Dev Console's own "commit to the
 #  launcher repo" path already has on whichever host received that
 #  request; this script is what gives every OTHER host the same
@@ -65,7 +66,7 @@ $proc = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     Where-Object { $_.CommandLine -like '*launcher-server.js*' }
 if ($proc) {
     Stop-Process -Id $proc.ProcessId -Force
-    Log "Stopped launcher-server.js (PID $($proc.ProcessId)) - listener_service.bat will relaunch it with the new code."
+    Log "Stopped launcher-server.js (PID $($proc.ProcessId)) - its watchdog (the G741 app on PC-1, or listener_service.bat) will relaunch it with the new code."
 } else {
     Log "launcher-server.js wasn't running - nothing to restart (it'll start fresh with the new code next time the listener task runs)."
 }
