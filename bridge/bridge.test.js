@@ -214,6 +214,83 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
   });
   await S.stop(); await llama.close();
 
+  console.log('remote restart and start agents (the Dev Console\'s Launchers card)');
+  // A model server that takes a moment to answer, so a job is still running when the restart arrives.
+  const slow = await new Promise((resolve) => {
+    const s = http.createServer((req, res) => {
+      if (req.url === '/health') { res.writeHead(200); return res.end('{"status":"ok"}'); }
+      req.resume(); req.on('end', () => setTimeout(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: { completion_tokens: 1 } })); }, 400));
+    });
+    s.listen(0, '127.0.0.1', () => resolve({ port: s.address().port, close: () => new Promise((r) => { s.close(r); s.closeAllConnections && s.closeAllConnections(); }) }));
+  });
+  const fakeSup = (calls) => ({ request: (a) => { calls.push(a); return a === 'start' || a === 'stop'; }, status: () => ({ phase: 'stopped', canStart: true }), tick: async () => {}, touch: () => {}, stop: async () => {} });
+  const mkR = (alias, extra = {}) => createAgent({ key: KEY, alias, port: 0, bindHost: '127.0.0.1', discovery: false, gpuProvider: gpu(1), render: { ports: [] }, restartDelayMs: 20, ...extra });
+  await test('an agent started by hand refuses to restart (it would not come back), and an unsigned restart is a bare 401', async () => {
+    const H = mkR('PC-H'), b = 'http://127.0.0.1:' + await H.start();
+    assert.equal((await fetch(b + '/v1/restart', { method: 'POST' })).status, 401);
+    assert.equal((await signedFetch(b, OTHER, 'POST', '/v1/restart', {})).status, 401);
+    const r = await signedFetch(b, KEY, 'POST', '/v1/restart', {});
+    assert.equal(r.status, 409); assert.match(r.json.error, /started by hand/);
+    assert.equal((await signedFetch(b, KEY, 'GET', '/v1/info')).status, 200, 'still running');
+    await H.stop();
+  });
+  await test('an agent under start-node.bat restarts on a signed request, never while a job runs, and only once however often it is asked', async () => {
+    let exits = 0;
+    const W = mkR('PC-W', { exit: () => { exits++; }, llamaUrl: 'http://127.0.0.1:' + slow.port, model: 'fake' }), b = 'http://127.0.0.1:' + await W.start();
+    const job = await signedFetch(b, KEY, 'POST', '/v1/jobs', { type: 'llm.chat', messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(job.status, 202); await sleep(60);
+    const busy = await signedFetch(b, KEY, 'POST', '/v1/restart', {});
+    assert.equal(busy.status, 409); assert.match(busy.json.error, /job is running/);
+    await sleep(500);                                                       // the job finishes
+    assert.equal((await signedFetch(b, KEY, 'GET', '/v1/jobs/' + job.json.jobId)).json.job.status, 'done');
+    const r1 = await signedFetch(b, KEY, 'POST', '/v1/restart', {}), r2 = await signedFetch(b, KEY, 'POST', '/v1/restart', {});
+    assert.deepEqual([r1.status, r1.json, r2.status], [200, { ok: true, restarting: true }, 200]);
+    await sleep(150);
+    assert.equal(exits, 1, 'exits once');
+    await assert.rejects(fetch(b + '/v1/info', { signal: AbortSignal.timeout(500) }), 'the agent stopped its server before exiting');
+  });
+  await test('the hub restarts only the PC asked for: PC 1 is the launcher\'s own node, PC 2 every other one', async () => {
+    const ex = { L: 0, Q: 0 };
+    const L = mkR('PC-L1', { exit: () => { ex.L++; } }), Q = mkR('Frankenstein', { exit: () => { ex.Q++; } });
+    const pl = await L.start(), pq = await Q.start();
+    const h = createHub({ dir: tmp(), key: KEY, targets: [{ host: '127.0.0.1', port: pl, source: 'local' }, { host: '127.0.0.1', port: pq, source: 'configured' }] });
+    await h.refresh();
+    assert.deepEqual(await h.restartAgents(2), [{ ok: true, alias: 'Frankenstein' }]);
+    await sleep(120); assert.deepEqual(ex, { L: 0, Q: 1 });
+    await h.refresh(); await h.refresh();                                  // PC 2 is gone now (its loop would bring it back)
+    const none = await h.restartAgents(2);
+    assert.equal(none.length, 1); assert.equal(none[0].ok, false); assert.match(none[0].error, /not online/);
+    assert.deepEqual(await h.restartAgents(1), [{ ok: true, alias: 'PC-L1' }]);
+    await sleep(120); assert.deepEqual(ex, { L: 1, Q: 1 });
+  });
+  await test('an agent that refuses to restart is reported as refused, with its own reason, never as restarting', async () => {
+    const N = mkR('PC-Hand'), pn = await N.start();
+    const h = createHub({ dir: tmp(), key: KEY, targets: [{ host: '127.0.0.1', port: pn, source: 'configured' }] });
+    await h.refresh();
+    const [r] = await h.restartAgents(2);
+    assert.equal(r.ok, false); assert.equal(r.alias, 'PC-Hand'); assert.match(r.error, /started by hand/);
+    await N.stop();
+  });
+  await test('start agents starts the model on every free PC, never on one that is reserved for rendering, and leaves a running one alone', async () => {
+    const cF = [], cV = [];
+    const F = mkR('PC-Free', { supervisor: fakeSup(cF), llamaUrl: 'http://127.0.0.1:1' }), V = mkR('PC-Reserved', { supervisor: fakeSup(cV), llamaUrl: 'http://127.0.0.1:1' });
+    const U = mkR('PC-Up', { llamaUrl: 'http://127.0.0.1:' + slow.port, model: 'fake' });
+    const N = mkR('PC-NoModel', { llama: { exe: '', model: '', port: 1 }, llamaUrl: 'http://127.0.0.1:1' });     // a fresh bridge-node.json: no model set up yet
+    const ports = [await F.start(), await V.start(), await U.start(), await N.start()];
+    const h = createHub({ dir: tmp(), key: KEY, targets: ports.map((port) => ({ host: '127.0.0.1', port, source: 'configured' })) });
+    await h.refresh();
+    const idV = h.devices().find((d) => d.alias === 'PC-Reserved').id;
+    await h.setReserved(idV, true);
+    const r = await h.startModels();
+    assert.deepEqual([r.starting, r.ready], [['PC-Free'], ['PC-Up']], 'a PC with no model set up is never reported as starting');
+    const why = Object.fromEntries(r.skipped.map((s) => [s.alias, s.why]));
+    assert.deepEqual(Object.keys(why).sort(), ['PC-NoModel', 'PC-Reserved']);
+    assert.equal(why['PC-Reserved'], 'reserved for rendering'); assert.ok(why['PC-NoModel'].length > 5, 'says why: ' + why['PC-NoModel']);
+    assert.deepEqual([cF, cV], [['start'], []]);
+    await F.stop(); await V.stop(); await U.stop(); await N.stop();
+  });
+  await slow.close();
+
   console.log('discovery (real UDP broadcast, optional)');
   await test('two agents on one LAN find each other from signed beacons (skipped if this host cannot broadcast)', async () => {
     if (!P.broadcastAddresses().length) { console.log('       (no real network interface - skipped)'); return; }

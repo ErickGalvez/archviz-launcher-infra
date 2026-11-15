@@ -151,6 +151,30 @@ function createHub(opts) {
     try { const r = await call(at(d), 'POST', '/v1/model', { action }); return { ok: true, model: r.model }; } catch (e) { return { ok: false, error: e.message }; }
   }
 
+  // ── The Dev Console's Launchers card: restart a PC's node agent, and start the local model on every PC that is free ──
+  // PC 1 is the launcher's own PC (the local node); PC 2 is any other PC in the pool. Each agent decides for itself whether it may restart.
+  const nameOf = (d) => aliases()[d.id] || d.nodeAlias;
+  async function restartAgents(pc) {
+    const list = [...devices.values()].filter((d) => d.online && (d.source === 'local' ? 1 : 2) === pc);
+    if (!list.length) return [{ ok: false, alias: 'PC ' + pc, error: 'its node agent is not online' }];
+    return Promise.all(list.map(async (d) => {
+      try { await call(at(d), 'POST', '/v1/restart', {}); return { ok: true, alias: nameOf(d) }; } catch (e) { return { ok: false, alias: nameOf(d), error: String(e.message).slice(0, 120) }; }
+    }));
+  }
+  async function startModels() {
+    const out = { starting: [], ready: [], skipped: [] };
+    for (const d of devices.values()) {
+      const name = nameOf(d), skip = (why) => out.skipped.push({ alias: name, why });
+      if (!d.online) skip('offline');
+      else if (renderBusyOf(d)) skip('rendering a client');
+      else if (reservedOf(d)) skip('reserved for rendering');
+      else if (d.stats && d.stats.llm && d.stats.llm.up) out.ready.push(name);
+      else if (!d.stats || !d.stats.model || d.stats.model.canStart === false) skip(String((d.stats && d.stats.model && d.stats.model.error) || 'no model is set up on this PC (llama in bridge-node.json)').slice(0, 120));
+      else { const r = await modelAction(d.id, 'start'); if (r.ok) out.starting.push(name); else skip(String(r.error).slice(0, 120)); }
+    }
+    return out;
+  }
+
   const load = (d) => { const s = d.stats || {}, l = s.llm || {}; return ((l.queued || 0) + (l.busy ? 1 : 0)) * 1000 + ((s.gpu && s.gpu.utilPct) || 0) + (s.cpuPct || 0) / 10; };
   const byLoad = (a, b) => load(a) - load(b) || a.id.localeCompare(b.id);
   const pickDevice = () => [...devices.values()].filter(aiReady).sort(byLoad)[0] || null;
@@ -229,7 +253,7 @@ function createHub(opts) {
   const stop = () => { if (timer) clearInterval(timer); timer = null; };
   const devicesRaw = () => [...devices.values()].map((d) => ({ ...d, alias: aliases()[d.id] || d.nodeAlias }));
 
-  return { start, stop, refresh, view, coordination, devices: devicesRaw, setAlias, setReserved, modelAction, submit, jobStatus, submitTo, jobOn, preRender, pickDevice,
+  return { start, stop, refresh, view, coordination, devices: devicesRaw, setAlias, setReserved, modelAction, restartAgents, startModels, submit, jobStatus, submitTo, jobOn, preRender, pickDevice,
     archiveDevice, archiveCall, renderBusyOf, reservedOf, aiCapable, aiReady, idleEnough, assignmentOf, load: byLoad, policy };
 }
 

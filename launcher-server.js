@@ -649,6 +649,7 @@ const updater = Up ? Up.createUpdater({
   run: runCmd, dir: BAT_DIR, busy: updateBusy,
   restart: () => { addLog('lobby', 'Admin panel: update applied, restarting the launcher.', 'info'); process.exit(0); },
   log: (m) => addLog('lobby', 'Admin panel: ' + m, 'info'),
+  restartDelayMs: 2500,   // room for the Dev Console's "Restart PC 1" to restart PC 1's node agent after the pull and before this process exits (remote-restart.js)
 }) : null;
 if (updater) updater.start();
 
@@ -1632,6 +1633,12 @@ try {
   });
 } catch (e) { addLog('bridge', 'Bridge not loaded: ' + e.message, 'warn'); }
 
+// ── LAUNCHERS CARD — the Dev Console's Restart PC 1 / PC 2 / all and Start Agents (remote-restart.js) ──
+// This launcher restarts only through the updater above (fast-forward pull, checks, refused while a session is live); the node agents through the hub.
+let remote = null;
+try { remote = require('./remote-restart.js').createRemote({ updater, hub: () => (bridgeRoutes ? bridgeRoutes.hub : null), busy: updateBusy, log: (m) => addLog('lobby', 'Dev Console: ' + m, 'info') }); }
+catch (e) { console.error('Remote restart not loaded: ' + e.message); }
+
 const server = http.createServer((req, res) => {
   const url = req.url;
   const parsedUrl = new URL(req.url, 'http://localhost');
@@ -2179,6 +2186,17 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
     })();
+    return;
+  }
+
+  // The Dev Console's Launchers card: restart PC 1 / PC 2 / both ({pc}: 1, 2 or left out), and start the local model on the free PCs.
+  // Dev Console key. What they may do, and the limits, are in remote-restart.js.
+  if ((parsedUrl.pathname === '/api/devconsole/restart-launchers' || parsedUrl.pathname === '/api/devconsole/start-agents') && req.method === 'POST') {
+    if (!isDevConsoleAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    if (!remote) { res.writeHead(503, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Remote restart is not loaded on this launcher (remote-restart.js).' })); return; }
+    readJsonBody(req).then((b) => (parsedUrl.pathname === '/api/devconsole/start-agents' ? remote.startAgents() : remote.restart(b))).then((r) => {
+      res.writeHead(r.status, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify(r.body));
+    }).catch((e) => { res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: String(e && e.message || e).slice(0, 160) })); });
     return;
   }
 
