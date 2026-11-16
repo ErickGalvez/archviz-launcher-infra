@@ -366,10 +366,11 @@
                 "exec": [
                   "pm.test('status is 204', () => pm.response.to.have.status(204));",
                   "pm.test('allows GET and POST', () => pm.expect(pm.response.headers.get('Access-Control-Allow-Methods')).to.include('POST'));",
-                  "pm.test('allows the QA and Dev Console key headers', () => {",
+                  "pm.test('allows the QA and Dev Console key headers and the G741 app pass', () => {",
                   "    const h = pm.response.headers.get('Access-Control-Allow-Headers');",
                   "    pm.expect(h).to.include('x-qa-key');",
                   "    pm.expect(h).to.include('x-devconsole-key');",
+                  "    pm.expect(h).to.include('x-g741-pass');",
                   "});"
                 ]
               }
@@ -1582,6 +1583,179 @@
                   "type": "string"
                 }
               ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "G741 app passes: issue, no key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('refused: 401 on the PC itself, 403 through Cloudflare (passes are issued only on the PC)', () => pm.expect(pm.response.code).to.be.oneOf([401, 403]));",
+                  "pm.test('issues nothing', () => pm.expect(pm.response.json()).to.include({ ok: false }).and.not.to.have.property('pass'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pass/issue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pass",
+                "issue"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"devconsole\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "G741 app passes: a pass cannot mint a pass",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('refused: 401 on the PC itself, 403 through Cloudflare (passes are issued only on the PC)', () => pm.expect(pm.response.code).to.be.oneOf([401, 403]));",
+                  "pm.test('issues nothing', () => pm.expect(pm.response.json()).to.include({ ok: false }).and.not.to.have.property('pass'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-devconsole-key",
+                "value": "g741p_PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pass/issue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pass",
+                "issue"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"devconsole\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "G741 app passes: check a made-up pass",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('says no valid pass', () => pm.expect(pm.response.json()).to.include({ ok: false }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-g741-pass",
+                "value": "g741p_PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pass/check",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pass",
+                "check"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "G741 app passes: sign every page out, no key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('says Unauthorized', () => pm.expect(pm.response.json()).to.include({ ok: false, error: 'Unauthorized' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/pass/revoke-all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pass",
+                "revoke-all"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
             }
           },
           "response": []

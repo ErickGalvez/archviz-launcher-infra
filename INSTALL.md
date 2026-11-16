@@ -69,6 +69,27 @@ When the script finishes, it prints a numbered list. Do these two now:
 
 **If Step 8 doesn't work, stop and message Erick. Don't guess.**
 
+## Step 9 (PC-1 only, Erick does this): switch to the G741 app
+
+On PC-1 the G741 Launcher app is the control panel, and it runs the launcher itself. The old page at `http://localhost:3000` is deprecated: it still works until 31 December 2026. The app only opens for Erick's Google account, so this step is his.
+
+1. On the website's Cortex page, click **G741 Launcher (Windows app)**, sign in, and install the file it downloads.
+2. Open the app, set up Windows Hello, and unlock it.
+3. Import the keys from `C:\ArchViz\ProjectFiles` when it asks (`admin.key` and the others).
+4. Open the **Launcher** tab and click **Take over from listener_service.bat**. Say yes when it asks. This turns off the `ArchViz-Listener` background task from Step 5, and does not delete it.
+5. Restart the computer, then open the app again. It starts the launcher. Closing its window keeps it running in the tray; only **Quit** in the tray menu stops it.
+6. Do Step 8 again.
+
+**While the app is closed (Quit), the website's API and the lobby are down.** The Launcher tab says so when the server is down.
+
+**To go back to the old way**, open PowerShell and run these two commands, then Quit the app from the tray:
+```
+Enable-ScheduledTask -TaskName ArchViz-Listener
+```
+```
+Start-ScheduledTask -TaskName ArchViz-Listener
+```
+
 ---
 
 ## Running two hosts at once (a backup machine)

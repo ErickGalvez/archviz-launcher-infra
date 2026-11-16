@@ -111,12 +111,22 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:1
 
 .server-warn{background:var(--red-dim);border:0.5px solid rgba(196,92,74,0.3);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(--red);line-height:1.7;display:none;}
 
+/* Deprecated: the G741 app's Launcher tab does everything this panel does (and runs the server). Kept working on this PC until the date in the banner. */
+.deprecated{background:var(--gold-dim);border:0.5px solid rgba(147,216,199,0.45);border-radius:8px;padding:12px 16px;margin-bottom:22px;font-size:11px;color:var(--text);line-height:1.7;}
+.deprecated b{color:var(--gold);font-weight:400;letter-spacing:0.04em;}
+.deprecated span{display:block;color:var(--text-dim);margin-top:4px;}
+
 .center-circle{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:50px;height:50px;border-radius:50%;background:hotpink;pointer-events:none;z-index:9999;}
 </style>
 </head>
 <body>
 <div class="center-circle"></div>
 <div class="wrap">
+
+  <div class="deprecated" id="deprecated" role="note">
+    <b>Deprecated: this panel now lives in the G741 app. It still works until 31 December 2026.</b>
+    <span>Open the G741 Launcher app, unlock it, and use its Launcher tab: it has every control on this page, and it runs this server itself.</span>
+  </div>
 
   <div class="header">
     <span class="logo">ArchViz</span>
@@ -316,7 +326,8 @@ function connectSSE() {
   };
 
   es.onopen = () => {
-    document.getElementById('server-warn').style.display = 'none';
+    const warn = document.getElementById('server-warn');           // not in this layout: guarded so the "Connected" line below is still written
+    if (warn) warn.style.display = 'none';
     addLog({ ts: ts(), msg: 'Connected to launcher server.', type: 'ok' });
   };
 }
@@ -404,9 +415,7 @@ async function launchAll() {
 
 async function stopAll() {
   addLog({ ts: ts(), msg: 'Stopping all processes…', type: 'info' });
-  try {
-    await fetch('/api/stop-all', { method: 'POST' });
-  } catch(e) {}
+  await api('/api/stop-all');           // with the admin key: /api/stop-all is on ADMIN_ROUTES, and a bare fetch was refused with a 401
   psState = 'stopped';
   cfState = 'stopped';
   tunnelURL = '';
@@ -415,7 +424,7 @@ async function stopAll() {
   document.getElementById('url-val').textContent = '— waiting for tunnel';
   document.getElementById('url-val').className = 'url-val';
   document.getElementById('ps-start-btn').disabled = false;
-  addLog({ ts: ts(), msg: 'All processes stopped — launcher server closing.', type: 'info' });
+  addLog({ ts: ts(), msg: 'All processes stopped. The launcher server stays up.', type: 'info' });
 }
 
 async function launchPS() { await api('/api/launch-ps'); }
