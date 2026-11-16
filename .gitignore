@@ -1,4 +1,5 @@
 # Secrets — never track these
+passes.json
 admin.key
 qa.key
 devconsole.key

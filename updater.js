@@ -7,14 +7,15 @@
 //
 // Applying an update: refuse while a client session, a turn or a queue is live (unless forced), `git pull --ff-only` (never a merge, never a reset of the
 // owner's work), then check that the new code at least loads (`node --check`, and that bridge/index.js still exposes init), roll the pull back if it does not,
-// and only then exit. listener_service.bat relaunches the process about 5 seconds later with the new code, the same self-healing loop the Dev Console merge uses.
+// and only then exit. The watchdog relaunches the process about 5 seconds later with the new code, the same self-healing loop the Dev Console merge uses: on PC-1
+// that is the G741 app's server supervisor, elsewhere (or after a rollback) listener_service.bat.
 //
 // This module never starts a process itself: launcher-server.js hands it `run(cmd, args, opts)`, so the tests can drive it with a fake and the sandbox
 // launcher (whose child_process is stubbed) can only answer "git is not available". The commands are fixed argument lists, never built from a request.
 const path = require('path');
 
 // The files the running launcher has loaded: a change to any of them needs a restart. Tests, mutation lists, the node agent and the installers do not.
-const RESTART_FILES = ['launcher-server.js', 'updater.js', 'remote-restart.js', 'logs.js', 'qa-seed.js', 'qa-seed/logs-tab.json', ...['index', 'hub', 'taskio', 'protocol', 'policy', 'routines', 'dispatcher', 'schedule', 'tickets', 'reports', 'verifier', 'fixnote', 'archive', 'ownertasks'].map((n) => 'bridge/' + n + '.js')];
+const RESTART_FILES = ['launcher-server.js', 'updater.js', 'remote-restart.js', 'passes.js', 'logs.js', 'qa-seed.js', 'qa-seed/logs-tab.json', ...['index', 'hub', 'taskio', 'protocol', 'policy', 'routines', 'dispatcher', 'schedule', 'tickets', 'reports', 'verifier', 'fixnote', 'archive', 'ownertasks'].map((n) => 'bridge/' + n + '.js')];
 
 const short = (s) => String(s || '').trim().slice(0, 7);
 const clip = (s, n) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n);
