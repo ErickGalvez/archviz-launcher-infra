@@ -31,6 +31,9 @@ const MUTATIONS = [
   ['a change to reports.js does not count as a launcher change', "'tickets', 'reports', 'verifier'", "'tickets', 'verifier'"],
   ['the bridge load check is dropped', "if (typeof b.init !== 'function') process.exit(3);", ''],
   ['a file that does not parse passes the check', "if (r.code !== 0) return f + ' does not parse: '", 'if (false) return f + \' does not parse: \''],
+  ['the About section shows a merge title as the last change', "'log', '--no-merges', '--date-order', '--max-count=5'", "'log', '--date-order', '--max-count=5'"],
+  ['the About section keeps the old version after an update that needs no restart', 'else { state.running = after; await readAbout(after);', 'else { state.running = after;'],
+  ['the About section loses the pull request number', 'about.pr = pr ? Number(pr[1]) : null;', 'about.pr = null;'],
   ['a missing upstream is not reported', "if (up.code !== 0) { info.error = 'This checkout has no upstream branch to compare with.'; return info; }", ''],
 ];
 

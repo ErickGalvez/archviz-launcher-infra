@@ -1086,7 +1086,7 @@ function appInstaller() {
     const full = path.join(APP_INSTALLER_DIR, f.name);
     try {
       const st = fs.statSync(full);
-      if (st.isFile() && st.size > 0 && fs.realpathSync(full).startsWith(fs.realpathSync(APP_INSTALLER_DIR) + path.sep)) return { name: f.name, full, size: st.size, version: f.v.join('.') };
+      if (st.isFile() && st.size > 0 && fs.realpathSync(full).startsWith(fs.realpathSync(APP_INSTALLER_DIR) + path.sep)) return { name: f.name, full, size: st.size, version: f.v.join('.'), builtAt: st.mtime.toISOString() };
     } catch (e) { /* try the next one */ }
   }
   return null;
@@ -1697,7 +1697,7 @@ const server = http.createServer((req, res) => {
   // UE5/Wilbur pair before relaunching, so left open, anyone on the internet
   // could cut a live visitor's session off with one request. The public flow
   // never calls it over HTTP - startTurn() calls launchPS() directly.
-  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set', '/api/pass/revoke-all', '/api/update/status', '/api/update/apply', '/api/logs'];
+  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set', '/api/pass/revoke-all', '/api/update/status', '/api/update/apply', '/api/logs', '/api/update/app'];
   if (ADMIN_ROUTES.includes(parsedUrl.pathname) && !isAdmin(req, parsedUrl)) {
     res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
@@ -2837,6 +2837,15 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
       res.end(JSON.stringify({ ...info, busy: info.ok ? updateBusy() : null }));
     }).catch((e) => { res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: String(e && e.message || e).slice(0, 160) })); });
+    return;
+  }
+  // The G741 app's About section and its own "Install updates": the newest app installer on this host (G741Launcher\dist), as its version, size and
+  // build time only (admin key, ADMIN_ROUTES). The file itself is never handed out here: only after the owner's Google sign-in (/api/app/download-ticket).
+  if (parsedUrl.pathname === '/api/update/app' && req.method === 'GET') {
+    const inst = appInstaller();
+    if (!inst) { res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, code: 'no_installer', error: 'No G741 app installer on this host yet (G741Launcher\\dist).' })); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS_HEADERS });
+    res.end(JSON.stringify({ ok: true, version: inst.version, size: inst.size, builtAt: inst.builtAt }));
     return;
   }
   if (parsedUrl.pathname === '/api/update/apply' && req.method === 'POST') {

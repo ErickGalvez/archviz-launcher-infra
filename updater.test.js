@@ -166,6 +166,35 @@ async function boot(w, extra = {}) {
     const w = world(), b = await boot(w); w.push({ 'launcher-server.js': GOOD_SERVER + '// y\n' }, 'y');
     const [a, c] = await Promise.all([b.up.apply({}), b.up.apply({})]); assert.equal([a, c].filter((x) => x.ok).length, 1); assert.ok([a, c].some((x) => /already running/.test(x.error || ''))); w.cleanup();
   });
+  console.log('what the About section says (the G741 app)');
+  await test('the running launcher\'s build number, commit, date and last change, read at start and shown with every check', async () => {
+    const w = world(); w.push({ 'README.md': 'two\n' }, 'Second change'); sh(w.host, 'pull', '-q');
+    const b = await boot(w), a = await b.up.about(), i = await b.up.check();
+    assert.equal(a.build, 2); assert.equal(a.commit, w.head().slice(0, 7)); assert.ok(Date.parse(a.date) > 0, a.date); assert.equal(a.pr, null);
+    assert.deepEqual([a.change.subject, a.changes.map((c) => c.subject)], ['Second change', ['Second change', 'first']]);
+    assert.deepEqual(i.about, a, 'every check carries it');
+    w.cleanup();
+  });
+  await test('a merged pull request: its number is kept, and the last change is the work itself, not "Merge pull request"', async () => {
+    const w = world();
+    sh(w.dev, 'checkout', '-q', '-b', 'feature'); put(w.dev, 'README.md', 'feature\n'); sh(w.dev, 'commit', '-qam', 'Add the Logs tab'); sh(w.dev, 'checkout', '-q', 'main');
+    sh(w.dev, 'merge', '-q', '--no-ff', 'feature', '-m', 'Merge pull request #7 from ErickGalvez/feature'); sh(w.dev, 'push', '-q', 'origin', 'main'); sh(w.host, 'pull', '-q');
+    const a = await (await boot(w)).up.about();
+    assert.equal(a.pr, 7); assert.equal(a.change.subject, 'Add the Logs tab'); assert.equal(a.build, 3);
+    w.cleanup();
+  });
+  await test('after an update that needs no restart the About section moves on to it; without git it says nothing rather than something wrong', async () => {
+    const w = world(), b = await boot(w);
+    w.push({ 'README.md': 'docs 3\n' }, 'Docs only'); await b.up.check({ fresh: true });
+    const r = await b.up.apply({ restart: false });
+    assert.equal(r.restarting, false);
+    assert.equal((await b.up.about()).change.subject, 'Docs only');
+    const none = createUpdater({ run: async () => ({ code: -1, stdout: '', stderr: 'git: not found' }), dir: w.host });
+    await none.start();
+    assert.deepEqual(await none.about(), { build: null, commit: null, date: null, pr: null, change: null, changes: [] });
+    assert.equal((await none.check()).about.build, null);
+    w.cleanup();
+  });
   await test('the files that need a restart are exactly what the launcher loads: tests, mutation lists and the node agent are not among them', () => {
     for (const f of ['launcher-server.js', 'updater.js', 'bridge/index.js', 'bridge/hub.js', 'bridge/reports.js', 'bridge/verifier.js']) assert.ok(RESTART_FILES.includes(f), f);
     for (const f of ['bridge/hub.test.js', 'bridge/bridge.mutation.js', 'bridge/tickets.mutations.js', 'bridge/node-agent.js', 'bridge/join.ps1', 'README.md', 'launcher-client.html', 'updater.test.js']) assert.ok(!RESTART_FILES.includes(f), f);

@@ -4,7 +4,7 @@ The launcher's HTTP API (`launcher-server.js` and `bridge/`) as a Postman collec
 
 | File | What it is |
 |---|---|
-| `archviz-launcher.postman_collection.json` | 126 requests in 12 folders, each with tests |
+| `archviz-launcher.postman_collection.json` | 128 requests in 12 folders, each with tests |
 | `local.postman_environment.json` | **ArchViz Launcher · local**: `http://localhost:3000`, writes **on** |
 | `live.postman_environment.json` | **ArchViz Launcher · live**: `https://api.g-741studio.com`, writes **off** |
 
@@ -27,7 +27,7 @@ The environments have empty key fields. **Never commit a key**: you type the key
 | 11 · Writes · Task-IO | `devconsoleKey` | records a task and marks it done. **Task-IO has no delete, so it stays in that day's list.** | skipped unless `allowWrites` is `true` |
 | 12 · Writes · Room | none | two test visitors join and leave | skipped unless `allowWrites` is `true` |
 
-The live environment has `allowWrites` set to `false`, so a run against it does folders 1–6 only (68 requests). Keep it that way: folders 8 and 11 leave records behind, and folder 12 puts test visitors in the room, where real visitors would see them.
+The live environment has `allowWrites` set to `false`, so a run against it does folders 1–6 only (70 requests). Keep it that way: folders 8 and 11 leave records behind, and folder 12 puts test visitors in the room, where real visitors would see them.
 
 Every response is also checked for two things: it arrives within `maxResponseMs` (3 s local, 8 s live, which is the Cloudflare Worker's own timeout), and every `/api/` response has the `Access-Control-Allow-Origin: *` header the website's pages need.
 
@@ -93,7 +93,7 @@ To test one computer directly, not whichever one the public address picks, set `
 
 You can also open any single request and press **Send**. Its results are in the **Test Results** tab under the response.
 
-**What a good run against the live launcher looks like:** 68 requests, all green. Folders 7–12 send nothing, and the Postman console (bottom bar) shows `Skipped, allowWrites is not true` for each of their requests.
+**What a good run against the live launcher looks like:** 70 requests, all green. Folders 7–12 send nothing, and the Postman console (bottom bar) shows `Skipped, allowWrites is not true` for each of their requests.
 
 ### 5. Run the writes against a test launcher (optional)
 
@@ -109,7 +109,7 @@ cd launcher-test
 node launcher-server.js
 ```
 
-On its first start it creates its own `admin.key`, `qa.key` and `devconsole.key` in that folder. Put those into **ArchViz Launcher · local** (step 3), pick that environment and run the whole collection: 126 requests, 491 tests. Delete the folder when you're done.
+On its first start it creates its own `admin.key`, `qa.key` and `devconsole.key` in that folder. Put those into **ArchViz Launcher · local** (step 3), pick that environment and run the whole collection: 128 requests, 501 tests. Delete the folder when you're done.
 
 ## Running from the command line (Newman)
 
