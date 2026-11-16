@@ -105,6 +105,41 @@ The website's Dev Console has **Restart All Launchers**, **Restart PC 1**, **Res
 - One restart every 20 seconds and one model start every 10 seconds. Nothing from the request reaches a command: only which PC.
 - Tests: `node remote-restart.test.js` (11 checks), `node remote-restart.mutation.js`; the agent and hub side are in `bridge/bridge.test.js`.
 
+## Logs: Wilbur, the node agents, cloudflared and the launcher in one place
+
+`logs.js` gathers what the terminals print, for the G741 app's **Logs** tab and the QA console's **Get logs** on a run case. It only reads.
+
+| Source | Where it reads |
+|---|---|
+| `wilbur` | Wilbur's own log files: `WILBUR_LOG_DIR` in `host.config`, else `<SIGNAL_DIR>\logs`. The newest two files of the last day, read like `tail -f` |
+| `agent` | each PC's node agent (PC-1 and PC-2), through the hub: the agent keeps its last 1000 lines (`GET /v1/log`, signed). Never a prompt, a result, or anything the Archivist reads |
+| `cloudflared` | `cloudflared.log` next to the launcher (`tunnel_service.bat` writes it) |
+| `backend` | the launcher's own lines (the admin panel's log), also kept in `logs/backend.jsonl` so a restart keeps them |
+
+Every line gets a level and one activity type, for the dropdown:
+- **Wilbur:** visitors, WebRTC negotiation, the UE5 streamer, keepalives (ping/pong, hidden by default), web requests.
+- **The launcher:** stream, lobby, tunnel, updates, bridge.
+- **The agents:** the AI model, jobs, render handover, security.
+- **Every source:** startup.
+
+Besides one type, three views: everything but keepalives (the default), everything, and problems only (warnings and errors).
+
+A **session** is one run of the stream, from the launch until it is stopped (`logs/sessions.json`, the last 50). "Current session" is the open one, with 15 seconds either side.
+
+| Route | Key | What it answers |
+|---|---|---|
+| `GET /api/logs?session=current\|all\|<id>&type=all\|everything\|problems\|<type>[,<type>]&sources=wilbur,agent,…&q=<words>&since=<cursor>&limit=` | admin | The app's tab: the lines, a `cursor` to follow it live (ask again with `since=<cursor>`), the counts per type, the sessions, the types and views, and each source's state ("no Wilbur log files in …", which PC's agent does not answer) |
+| `GET /api/qa/logs?since=<ISO>&until=<ISO>&sources=wilbur,cloudflared,backend,agent` | QA | The QA console's run case: every line in the window (at most two days) as `{ source, at, text }`; an agent's line starts with its PC |
+
+If Wilbur writes its logs somewhere else, add `WILBUR_LOG_DIR=<folder>` to `host.config`.
+
+Tests: `node logs.test.js` (22 checks) and `node logs.mutation.js`. The agent's side is in `bridge/bridge.test.js`.
+
+**QA cases.** The Logs tab's QA cases are shipped in `qa-seed/logs-tab.json`: LA-F1 to LA-F10, each naming the filters to set and the lines to find. On start, the launcher adds each shipped case its QA library has never had, once (`qa-seed.js`):
+- an edited case is never overwritten
+- a deleted case does not come back
+- an empty library is left for the QA console's own import
+
 ## Stopping the stream
 
 - Close the UE5 window (or the command prompt titled "UE5 PixelStream")

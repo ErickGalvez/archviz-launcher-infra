@@ -1,0 +1,95 @@
+{
+  "about": "The G741 app's Logs tab and the QA console's Get logs: which filters to set to verify each part of a session from the terminals' logs (Wilbur, the node agents, cloudflared, the launcher). Added to the QA library by the launcher once (qa-seed.js).",
+  "cases": [
+    {
+      "id": "LA-F1", "component": "C10", "title": "Logs tab streams Wilbur and the node agent live, current session",
+      "priority": "Critical", "type": "Smoke", "platform": "G741 Launcher app (PC-1)",
+      "preconditions": "The launcher is running with the logs update. host.config has SIGNAL_DIR. The node agent runs under start-node.bat.",
+      "steps": "1. Start the stream (Launcher tab or a visitor's turn).\n2. Open the Logs tab.\n3. Filters: Session = Current session; What = Everything but keepalives; Sources = Wilbur + Agents; Words = empty.\n4. Leave it open for 30 seconds without touching it.",
+      "expected": "Wilbur's startup lines are there: 'Http server listening on port 80' and 'Listening for streamer connections on port 8888'. The agent's line 'render: this PC is serving a client' appears once the stream is up. New lines appear by themselves within about 2 seconds, without reloading. The header names the session (Stream session) and when it started.",
+      "evidence": "Screenshot of the Logs tab, and Get logs on this run case (sources wilbur, agent)",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F2", "component": "C10", "title": "Current session shows only this run; the session list opens an earlier one",
+      "priority": "High", "type": "Functional", "platform": "G741 Launcher app (PC-1)",
+      "preconditions": "At least one earlier stream session today.",
+      "steps": "1. Stop the stream, wait 90 seconds, start it again.\n2. Logs tab: Session = Current session; What = Everything, keepalives too; Sources = all.\n3. Note the time of the first line.\n4. Session = the previous session in the list.",
+      "expected": "With Current session, the first launcher line is 'Starting launch_pixelstream.bat' of the new launch: no line is older than 15 seconds before it, and the header says the session is open. The previous session shows only its own run, ends 15 seconds after it was stopped, and is marked ended. Session = All shows both.",
+      "evidence": "Two screenshots (current and previous session) with their first and last line times",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F3", "component": "C10", "title": "A visitor from join to leave (Visitors filter)",
+      "priority": "High", "type": "Functional", "platform": "G741 Launcher app (PC-1) + a phone as the visitor",
+      "preconditions": "Stream running, Logs tab open.",
+      "steps": "1. Logs tab: Session = Current session; What = Visitors (players join, leave, subscribe); Sources = Wilbur.\n2. Join from the phone, wait for the picture, then close the tab.\n3. Words = the Player number shown (for example Player5) to follow only that visitor.",
+      "expected": "In order, for one Player number: 'player' 'connected', a 'subscribe' to DefaultStreamer, the dataChannelRequest / peerDataChannels lines, then 'disconnected' when the tab closes. No line of another Player appears once Words is set.",
+      "evidence": "Get logs on this run case (Timer window): the Analyze panel finds subscribe, dataChannelRequest and disconnected",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F4", "component": "C10", "title": "WebRTC negotiation completes (WebRTC filter)",
+      "priority": "Critical", "type": "Functional", "platform": "G741 Launcher app (PC-1) + any browser as the visitor",
+      "preconditions": "Stream running.",
+      "steps": "1. Logs tab: Session = Current session; What = WebRTC negotiation (offer, answer, ICE); Sources = Wilbur.\n2. A visitor joins.\n3. Words = that visitor's Player number.",
+      "expected": "For the same Player: a 'config' message, then 'offer', then 'answer', then several iceCandidate lines, all within a few seconds. No iceCandidateError line. If the picture never appears, this view shows where it stopped.",
+      "evidence": "Get logs on this run case: Analyze finds offer, answer and iceCandidate, and counts no error lines",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F5", "component": "C10", "title": "Keepalives are hidden by default and shown when asked for",
+      "priority": "Medium", "type": "Functional", "platform": "G741 Launcher app (PC-1)",
+      "preconditions": "Stream running with one visitor for at least 2 minutes.",
+      "steps": "1. Logs tab as it opens, its default view: Session = Current session; Sources = Wilbur; What = Everything but keepalives.\n2. What = Keepalives (ping / pong).\n3. Words = DefaultStreamer, then the visitor's Player number.",
+      "expected": "The default view shows no ping or pong line. The Keepalives view shows '\"type\":\"ping\"' answered by '\"type\":\"pong\"' about every 30 seconds, for DefaultStreamer and for each Player. The count beside Keepalives in the dropdown matches what the list shows.",
+      "evidence": "Screenshot of both views",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F6", "component": "C10", "title": "Problems only shows warnings and errors from every source",
+      "priority": "High", "type": "Functional", "platform": "G741 Launcher app (PC-1)",
+      "preconditions": "A test session that can be broken on purpose.",
+      "steps": "1. Logs tab: Session = Current session; What = Problems only (warnings and errors); Sources = all.\n2. Close the UE5 window while a visitor is connected.\n3. Restart the stream from the Launcher tab.",
+      "expected": "Only warn and error lines are listed, each marked with its level and source. Closing UE5 shows Wilbur's streamer 'disconnected' line and the visitor's disconnect. No info line appears in this view.",
+      "evidence": "Get logs on this run case: Analyze counts the error-looking lines; screenshot of the view",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F7", "component": "C10", "title": "Render handover: the AI model leaves the GPU for the stream (agent filters)",
+      "priority": "High", "type": "Functional", "platform": "G741 Launcher app (PC-1)",
+      "preconditions": "The local model is loaded on PC-1 (Start Agents in the Dev Console); PC-2 online if available.",
+      "steps": "1. Logs tab: Session = Current session; What = Render handover (a client takes the GPU); Sources = Agents.\n2. Start the stream, let a visitor in, then stop the stream.\n3. What = Local AI model (load, unload).",
+      "expected": "PC-1's agent says 'model stopping' before the stream comes up, then 'render: this PC is serving a client (no AI work here)', and after the stop 'render: the client session ended'. Every agent line is named by its PC (PC-1, or PC-2 / Frankenstein). AI work asked meanwhile shows as a 'job' line on PC-2, not on PC-1.",
+      "evidence": "Get logs on this run case (source agent)",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F8", "component": "C10", "title": "Agent jobs: started and done, and never the prompt (Agent jobs filter)",
+      "priority": "High", "type": "Functional", "platform": "G741 Launcher app (PC-1) + Task-IO",
+      "preconditions": "The local model is loaded on a PC that is not rendering.",
+      "steps": "1. In Task-IO, Ask a role (Nadia) something that names a client, for example Torre Polanco.\n2. Logs tab: Session = All; What = Agent jobs (started, done, failed); Sources = Agents.\n3. Words = the client name you typed.",
+      "expected": "The job shows as 'job ... started: llm.chat (sales) for Nadia' and then 'done in' with its seconds. Searching the client name finds nothing: a prompt never reaches the log. A failed confidential job (legal, compliance, the Archivist) only says it failed, with no detail.",
+      "evidence": "Screenshot of the job lines and of the empty search",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F9", "component": "C10", "title": "Tunnel lines (Tunnel filter)",
+      "priority": "Medium", "type": "Functional", "platform": "G741 Launcher app (PC-1)",
+      "preconditions": "tunnel_service.bat writes cloudflared.log next to the launcher.",
+      "steps": "1. Logs tab: Session = All; What = Tunnel (cloudflared); Sources = cloudflared + Launcher.\n2. Restart the tunnel from the Launcher tab.",
+      "expected": "cloudflared's 'Registered tunnel connection' lines appear for each connIndex after the restart, with their location. A dropped connection shows as a WRN or ERR line in Problems only too.",
+      "evidence": "Get logs on this run case (source cloudflared)",
+      "status": "Not Run"
+    },
+    {
+      "id": "LA-F10", "component": "C10", "title": "A missing source is said plainly, and the others keep streaming",
+      "priority": "Medium", "type": "Regression", "platform": "G741 Launcher app (PC-1)",
+      "preconditions": "A copy of host.config to restore afterwards.",
+      "steps": "1. Point WILBUR_LOG_DIR in host.config at an empty folder.\n2. Logs tab: Session = All; What = Everything, keepalives too; Sources = all.\n3. Stop the node agent's start-node.bat window.\n4. Restore host.config and start the agent again.",
+      "expected": "The Wilbur source shows 'no Wilbur log files in' with the folder it looked in, and the agent source names the PC that does not answer. cloudflared and Launcher lines keep arriving meanwhile. After restoring, Wilbur's and the agent's lines come back without restarting the launcher, and the agent's log starts again from its 'started:' line.",
+      "evidence": "Screenshots of the source messages before and after",
+      "status": "Not Run"
+    }
+  ]
+}

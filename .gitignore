@@ -26,6 +26,7 @@ rename
 
 # Runtime output - not source, regenerated every run
 *.log
+logs/
 session-log.jsonl
 devconsole-log.jsonl
 leads-log.jsonl

@@ -63,6 +63,15 @@ function createAgent(opts) {
     render = {}, statePath = null, archiveCfg = () => (opts.archive || {}), archiveDir = null, archiveSliceMs = 0,   // archiveCfg: THIS PC's { enabled, roots }, read again for every request so an edit of the config applies at once
     exit = null, restartDelayMs = 300 } = opts;   // exit: how this process ends so start-node.bat's loop starts it again (set only with --supervised); null = it cannot restart itself
   if (!key) throw new Error('agent needs a key');
+  // This agent's own log, as its terminal shows it: the last 1000 lines, read by the hub (signed GET /v1/log) for the G741 app's Logs tab and the QA
+  // console's "Get logs". Only what the agent says about itself: never a prompt, a result, or anything the Archivist reads (that stays on the console).
+  const logRing = [], startedAt = Date.now();
+  let logSeq = 0;
+  const say = (m, level = 'info') => {
+    const e = { seq: ++logSeq, ts: Date.now(), level: level === 'warn' || level === 'error' ? level : 'info', text: String(m).replace(/[\u0000-\u001f]+/g, ' ').slice(0, 500) };
+    logRing.push(e); if (logRing.length > 1000) logRing.shift();
+    log(m);
+  };
   const llamaUrl = opts.llamaUrl || ('http://127.0.0.1:' + ((llama && llama.port) || 8097));
   const renderCfg = { enabled: render.enabled !== false, ports: Array.isArray(render.ports) ? render.ports.filter(Number.isInteger) : [8888], canRender: render.canRender !== false };
 
@@ -72,7 +81,7 @@ function createAgent(opts) {
   let running = null, server = null, sock = null, timers = [], restarting = false;
   const sampleCpu = makeCpuSampler();
   const state = { gpu: null, cpuPct: 0, llmUp: false, hwGpu: null, renderProbe: false, hintUntil: 0, reserved: false };
-  const supervisor = injected || (llama ? createSupervisor({ llama: { ...llama, alias: model }, window: nightly, idleMinutes, log }) : null);
+  const supervisor = injected || (llama ? createSupervisor({ llama: { ...llama, alias: model }, window: nightly, idleMinutes, log: say }) : null);
   if (statePath) { try { state.reserved = !!JSON.parse(fs.readFileSync(statePath, 'utf8')).reserved; } catch (e) { /* first run */ } }
   const saveState = () => { if (statePath) { try { fs.writeFileSync(statePath, JSON.stringify({ reserved: state.reserved })); } catch (e) { /* read-only folder: keep it in memory */ } } };
   // This PC is "rendering" when a client session is up (probe), was just announced by the launcher (hint), or it is reserved for rendering.
@@ -83,7 +92,10 @@ function createAgent(opts) {
     try { state.gpu = await gpuProvider(); } catch (e) { state.gpu = null; }
     if (state.gpu && !state.hwGpu) state.hwGpu = { name: state.gpu.name, vramTotalGB: state.gpu.vramTotalGB };
     state.renderProbe = renderCfg.enabled ? (await Promise.all(renderCfg.ports.map(portOpen))).some(Boolean) : false;
-    if (supervisor) { try { await supervisor.tick({ renderBusy: renderBusy() }); } catch (e) { log('model supervisor: ' + e.message); } }
+    const wasBusy = state.renderBusyLast;
+    state.renderBusyLast = renderBusy();
+    if (wasBusy !== undefined && wasBusy !== state.renderBusyLast) say(state.renderBusyLast ? 'render: this PC is serving a client (no AI work here)' : 'render: the client session ended, AI work may run here again');
+    if (supervisor) { try { await supervisor.tick({ renderBusy: renderBusy() }); } catch (e) { say('model supervisor: ' + e.message, 'warn'); } }
   }
   async function probeLlm() {
     try { state.llmUp = (await fetch(llamaUrl + '/health', { signal: AbortSignal.timeout(1500) })).ok; } catch (e) { state.llmUp = false; }
@@ -149,6 +161,7 @@ function createAgent(opts) {
   }
   async function runJob(job) {
     job.status = 'running'; job.startedAt = Date.now();
+    say('job ' + job.id + ' started: ' + job.type + (job.area ? ' (' + job.area + ')' : '') + (job.role ? ' for ' + job.role : ''));
     try {
       if (job.type === 'echo') job.result = { text: job.messages.map((m) => m.content).join('\n'), tokens: 0 };
       else if (job.type === 'archive.scan') {
@@ -175,6 +188,10 @@ function createAgent(opts) {
       job.error = clip(renderBusy() && !/^rendering:/.test(e.message) ? 'rendering: the model was unloaded because a client session started (' + e.message + ')' : e.message, 300);
     }
     job.doneAt = Date.now();
+    const took = ((job.doneAt - job.startedAt) / 1000).toFixed(1) + ' s';
+    // A confidential job's error may name what it read (an Archivist scan names a private folder): its line says only that it failed.
+    if (job.status === 'done') say('job ' + job.id + ' done in ' + took + (job.result && job.result.tokens ? ', ' + job.result.tokens + ' tokens' : ''));
+    else say('job ' + job.id + ' failed after ' + took + (job.confidential ? '' : ': ' + clip(job.error, 160)), /^rendering:/.test(job.error || '') ? 'info' : 'warn');
     if (supervisor) supervisor.touch();
   }
   function pump() {
@@ -194,12 +211,14 @@ function createAgent(opts) {
     req.on('end', () => {
       if (big) return;
       const v = P.verifyRequest(key, req.method, req.url, req.headers, body, guard);
-      if (!v.ok) { log('rejected request from ' + req.socket.remoteAddress + ': ' + v.reason); return send(401, { ok: false, error: 'unauthorized' }); }
+      if (!v.ok) { say('rejected request from ' + req.socket.remoteAddress + ': ' + v.reason, 'warn'); return send(401, { ok: false, error: 'unauthorized' }); }
       const u = new URL(req.url, 'http://x');
       const p = u.pathname;
       if (req.method === 'GET' && p === '/v1/info') return send(200, { ok: true, ...info() });
       if (req.method === 'GET' && p === '/v1/stats') return send(200, { ok: true, ...stats() });
       if (req.method === 'GET' && p === '/v1/peers') return send(200, { ok: true, peers: [...peers.values()] });
+      // This agent's log since a line number (the hub keeps its place); startedAt tells the hub the agent restarted and its numbers began again.
+      if (req.method === 'GET' && p === '/v1/log') { const since = Math.max(0, parseInt(u.searchParams.get('since'), 10) || 0); return send(200, { ok: true, startedAt, seq: logSeq, lines: logRing.filter((e) => e.seq > since).slice(-500) }); }
       if (req.method === 'GET' && p === '/v1/jobs') return send(200, { ok: true, jobs: [...jobs.values()].slice(-20).reverse().map((j) => jobView(j, false)) });
       if (req.method === 'GET' && p.startsWith('/v1/jobs/')) { const j = jobs.get(p.slice(9)); return j ? send(200, { ok: true, job: jobView(j, true) }) : send(404, { ok: false, error: 'no such job' }); }
       if (req.method === 'POST' && p === '/v1/jobs') {
@@ -233,7 +252,7 @@ function createAgent(opts) {
         if (!exit) return send(409, { ok: false, error: 'this agent was started by hand, so it would not come back: start it with start-node.bat' });
         if (running || queue.length) return send(409, { ok: false, error: 'busy: a job is running on this PC' });
         if (!restarting) {
-          restarting = true; log('restart requested by the hub: back in about 5 seconds');
+          restarting = true; say('restart requested by the hub: back in about 5 seconds');
           setTimeout(() => { stop().catch(() => {}).then(() => exit()); }, restartDelayMs);   // stop first: never leave a model this agent started running unattended
         }
         return send(200, { ok: true, restarting: true });
@@ -264,7 +283,7 @@ function createAgent(opts) {
   }
   function startDiscovery() {
     sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    sock.on('error', (e) => { log('discovery disabled: ' + e.message); try { sock.close(); } catch (x) { /* closed */ } sock = null; });
+    sock.on('error', (e) => { say('discovery disabled: ' + e.message, 'warn'); try { sock.close(); } catch (x) { /* closed */ } sock = null; });
     sock.on('message', (msg, rinfo) => {
       const b = P.parseBeacon(key, msg);
       if (!b || b.id === id) return;
@@ -275,6 +294,7 @@ function createAgent(opts) {
 
   async function start() {
     await new Promise((resolve, reject) => { server = http.createServer(handle); server.once('error', reject); server.listen(port, bindHost, resolve); });
+    say('started: "' + alias + '" listening on :' + server.address().port + (exit ? ' (under start-node.bat)' : ' (started by hand)'));
     await sample(); await probeLlm();
     timers.push(setInterval(sample, statsMs), setInterval(probeLlm, 3000));
     if (discovery) startDiscovery();

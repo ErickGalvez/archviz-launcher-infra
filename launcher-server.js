@@ -108,12 +108,19 @@ function broadcast(event, data) {
   });
 }
 
+// ── LOGS — Wilbur's, cloudflared's, this launcher's and the node agents' lines in one place (logs.js): the G741 app's Logs tab (GET /api/logs,
+// admin key) and the QA console's "Get logs" (GET /api/qa/logs, QA key). Read-only; if it fails to load, the launcher carries on without it.
+let logs = null;
+try { logs = require('./logs.js').createLogs({ dir: BAT_DIR, hub: () => (bridgeRoutes ? bridgeRoutes.hub : null) }); }
+catch (e) { console.error('Logs not loaded: ' + e.message); }
+
 function addLog(source, msg, type='info') {
   const entry = { ts: new Date().toLocaleTimeString('en-GB'), msg, type, source };
   if (source === 'ps') psLog.push(entry);
   else cfLog.push(entry);
   broadcast('log', entry);
   console.log(`[${source.toUpperCase()}] ${msg}`);
+  if (logs) { try { logs.backend(source, msg, type); } catch (e) { /* the log store must never break a log line */ } }
 }
 
 // ── PROCESS CONTROL — precise, verified kills instead of fragile heuristics ──
@@ -285,6 +292,9 @@ async function launchPS() {
     psLaunchInProgress = false;
     return { ok: false, error: 'launch_pixelstream.bat not found at: ' + PS_BAT };
   }
+
+  // A new stream session for the Logs tab's "current session" filter (logs.js): it starts here and ends when the stream is stopped.
+  if (logs) { try { logs.sessionStart('Stream session · ' + (currentTurn && currentTurn.name ? String(currentTurn.name).slice(0, 30) : 'launched from the panel')); } catch (e) { /* never block a launch */ } }
 
   // A local AI model on this PC shares the GPU with UE5. Ask the bridge to unload it BEFORE the stream starts, so the
   // product never competes with it for VRAM. Bounded (8 s) and non-fatal: it can delay a launch by seconds, never block it.
@@ -1299,6 +1309,7 @@ let qaHistory = {}; // { [caseId]: [ { ...previousSnapshot, versionedAt } ] }
 let qaBugs = [];
 let qaRegressions = []; // regression runs the verifier suggests: [{ id, at, cluster, caseIds, reason, status: suggested|started|dismissed, name }]
 let qaReports = []; // reports: a named set of tickets filed together + a stamp (new|working|closed) that moves them; see bridge/reports.js
+let qaSeeded = [];  // ids of the QA cases shipped with the launcher (qa-seed/) that this library has already been offered; see qa-seed.js
 // The ticket model (fix notes, verification, the fix queue). If the file is missing the board answers 503 instead of the launcher failing to start.
 let Tk = null;
 try { Tk = require('./bridge/tickets'); } catch (e) { console.error('Ticket module not loaded: ' + e.message); }
@@ -1317,6 +1328,7 @@ function loadQaData() {
     qaBugs = Array.isArray(parsed.bugs) ? parsed.bugs : [];
     qaRegressions = Array.isArray(parsed.regressions) ? parsed.regressions : [];
     qaReports = Array.isArray(parsed.reports) ? parsed.reports : [];
+    qaSeeded = Array.isArray(parsed.seeded) ? parsed.seeded.filter((x) => typeof x === 'string') : [];
   } catch (e) {
     qaCases = [];
     qaHistory = {};
@@ -1329,10 +1341,18 @@ function loadQaData() {
 }
 function saveQaData() {
   try {
-    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory, bugs: qaBugs, regressions: qaRegressions, reports: qaReports }, null, 2));
+    fs.writeFileSync(QA_DATA_FILE, JSON.stringify({ cases: qaCases, history: qaHistory, bugs: qaBugs, regressions: qaRegressions, reports: qaReports, seeded: qaSeeded }, null, 2));
   } catch (e) { /* saving must never crash a request */ }
 }
 loadQaData();
+// QA cases shipped with the launcher (qa-seed/*.json): each one this library has never had is added once; one it had (even if deleted since) is left alone.
+try {
+  const s = require('./qa-seed.js').seed({ cases: qaCases, seeded: qaSeeded, dir: path.join(BAT_DIR, 'qa-seed') });
+  if (s.added.length || s.seeded.length !== qaSeeded.length) {
+    qaCases = s.cases; qaSeeded = s.seeded; saveQaData();
+    if (s.added.length) console.log('[QA] Added ' + s.added.length + ' case(s) shipped with the launcher: ' + s.added.join(', '));
+  }
+} catch (e) { console.error('QA cases shipped with the launcher were not added: ' + e.message); }
 
 // ── DEV CONSOLE — voice-to-commit relay ───────────────────────
 // Dispatch creates a GitHub issue (title/body carry the transcript). A
@@ -1633,6 +1653,9 @@ try {
   });
 } catch (e) { addLog('bridge', 'Bridge not loaded: ' + e.message, 'warn'); }
 
+// The stream's state closes the Logs tab's open session once the stream has stopped (logs.js).
+if (logs) { const t = setInterval(() => { try { logs.sessionTick(lastPSStatus); } catch (e) { /* never stop the launcher */ } }, 5000); if (t.unref) t.unref(); }
+
 // ── LAUNCHERS CARD — the Dev Console's Restart PC 1 / PC 2 / all and Start Agents (remote-restart.js) ──
 // This launcher restarts only through the updater above (fast-forward pull, checks, refused while a session is live); the node agents through the hub.
 let remote = null;
@@ -1660,7 +1683,7 @@ const server = http.createServer((req, res) => {
   // UE5/Wilbur pair before relaunching, so left open, anyone on the internet
   // could cut a live visitor's session off with one request. The public flow
   // never calls it over HTTP - startTurn() calls launchPS() directly.
-  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set', '/api/update/status', '/api/update/apply'];
+  const ADMIN_ROUTES = ['/api/launch-ps', '/api/launch-cf', '/api/stop-ps', '/api/stop-cf', '/api/stop-all', '/api/set-url', '/api/force-reset', '/api/session-mode/set', '/api/update/status', '/api/update/apply', '/api/logs'];
   if (ADMIN_ROUTES.includes(parsedUrl.pathname) && !isAdmin(req, parsedUrl)) {
     res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
@@ -2772,6 +2795,19 @@ const server = http.createServer((req, res) => {
     readJsonBody(req).then((b) => updater.apply({ force: !!b && b.force === true, restart: !b || b.restart !== false })).then((r) => {
       res.writeHead(r.ok ? 200 : r.busy ? 409 : 400, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify(r));
     }).catch((e) => { res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: String(e && e.message || e).slice(0, 160) })); });
+    return;
+  }
+
+  // The terminals' logs (logs.js). /api/logs is for the G741 app's Logs tab (admin key, on ADMIN_ROUTES above): a session, a type or view, words,
+  // and a cursor to follow it live. /api/qa/logs is for the QA console's "Get logs" on a run case (QA key): every line in a time window.
+  if ((parsedUrl.pathname === '/api/logs' || parsedUrl.pathname === '/api/qa/logs') && req.method === 'GET') {
+    const qaRoute = parsedUrl.pathname === '/api/qa/logs';
+    if (qaRoute && !isQaAuthed(req)) { res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'Unauthorized' })); return; }
+    if (!logs) { res.writeHead(503, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: 'The log reader is not loaded on this launcher (logs.js).' })); return; }
+    const params = Object.fromEntries(parsedUrl.searchParams);
+    (qaRoute ? logs.qa(params) : logs.query(params)).then((r) => {
+      res.writeHead(r.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS_HEADERS }); res.end(JSON.stringify(r.body));
+    }).catch((e) => { res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS }); res.end(JSON.stringify({ ok: false, error: String(e && e.message || e).slice(0, 160) })); });
     return;
   }
 

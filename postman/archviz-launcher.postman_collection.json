@@ -1462,6 +1462,129 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "Admin: logs, no key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('says Unauthorized', () => pm.expect(pm.response.json()).to.include({ ok: false, error: 'Unauthorized' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "QA: logs, no key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('says Unauthorized', () => pm.expect(pm.response.json()).to.include({ ok: false, error: 'Unauthorized' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/qa/logs?since=2026-01-01T00:00:00Z",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "qa",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "since",
+                  "value": "2026-01-01T00:00:00Z"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Admin: a QA key is not an admin key for the logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('says Unauthorized', () => pm.expect(pm.response.json()).to.include({ ok: false, error: 'Unauthorized' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ]
+            },
+            "auth": {
+              "type": "apikey",
+              "apikey": [
+                {
+                  "key": "key",
+                  "value": "x-admin-key",
+                  "type": "string"
+                },
+                {
+                  "key": "value",
+                  "value": "{{qaKey}}",
+                  "type": "string"
+                },
+                {
+                  "key": "in",
+                  "value": "header",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -1499,6 +1622,89 @@
                 "api",
                 "update",
                 "status"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Logs: the current session, everything but keepalives",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('lines, a cursor, the sessions, the types and the views', () => { pm.expect(j.ok).to.eql(true); pm.expect(j.lines).to.be.an('array'); pm.expect(j.cursor).to.be.a('number'); pm.expect(j.sessions).to.be.an('array'); pm.expect(j.types.map((t) => t.id)).to.include.members(['players', 'webrtc', 'keepalive', 'model', 'jobs']); pm.expect(j.views).to.have.property('problems'); });",
+                  "pm.test('each source says whether it could be read', () => ['wilbur', 'cloudflared', 'backend', 'agent'].forEach((s) => pm.expect(j.sources[s]).to.have.property('ok')));",
+                  "pm.test('no keepalive in the default view', () => pm.expect(j.lines.filter((l) => l.type === 'keepalive')).to.have.length(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs?session=current&type=all&limit=200",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "session",
+                  "value": "current"
+                },
+                {
+                  "key": "type",
+                  "value": "all"
+                },
+                {
+                  "key": "limit",
+                  "value": "200"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Logs: an unknown type is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('names the types it takes', () => pm.expect(pm.response.json().error).to.match(/type must be one of .*keepalive/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs?type=nonsense",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "nonsense"
+                }
               ]
             }
           },
@@ -2194,6 +2400,98 @@
                 "api",
                 "qa",
                 "reports"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "QA logs: the last hour, all sources",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('logsSince', new Date(Date.now() - 3600000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('{ source, at, text } lines, as the QA console reads them', () => { pm.expect(j.ok).to.eql(true); j.lines.forEach((l) => { pm.expect(l.source).to.be.oneOf(['wilbur', 'cloudflared', 'backend', 'agent']); pm.expect(l.at).to.match(/^\\d{4}-\\d{2}-\\d{2}T/); pm.expect(l.text).to.be.a('string'); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/qa/logs?since={{logsSince}}&sources=wilbur,cloudflared,backend,agent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "qa",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "since",
+                  "value": "{{logsSince}}"
+                },
+                {
+                  "key": "sources",
+                  "value": "wilbur,cloudflared,backend,agent"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "QA logs: a backwards window is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('says why', () => pm.expect(pm.response.json().error).to.match(/since first/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/qa/logs?since=2026-11-16T10:00:00Z&until=2026-11-16T09:00:00Z",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "qa",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "since",
+                  "value": "2026-11-16T10:00:00Z"
+                },
+                {
+                  "key": "until",
+                  "value": "2026-11-16T09:00:00Z"
+                }
               ]
             }
           },
