@@ -161,6 +161,21 @@ function createHub(opts) {
       try { await call(at(d), 'POST', '/v1/restart', {}); return { ok: true, alias: nameOf(d) }; } catch (e) { return { ok: false, alias: nameOf(d), error: String(e.message).slice(0, 120) }; }
     }));
   }
+  // Each online agent's log since the line the caller last saw (cursors: { [deviceId]: { seq, startedAt } }). An agent that restarted (a new startedAt)
+  // is read from its first line again. Read-only: the agent decides what its log holds.
+  async function agentLogs(cursors = {}) {
+    const out = [];
+    await Promise.all([...devices.values()].filter((d) => d.online).map(async (d) => {
+      const c = cursors[d.id] || {};
+      try {
+        const r = await call(at(d), 'GET', '/v1/log?since=' + (c.startedAt ? Math.max(0, parseInt(c.seq, 10) || 0) : 0));
+        const restarted = c.startedAt && r.startedAt !== c.startedAt;
+        const lines = restarted ? [] : r.lines || [];
+        out.push({ id: d.id, alias: nameOf(d), pc: d.source === 'local' ? 1 : 2, startedAt: r.startedAt, seq: restarted ? 0 : r.seq, lines, restarted: !!restarted });
+      } catch (e) { out.push({ id: d.id, alias: nameOf(d), pc: d.source === 'local' ? 1 : 2, error: String(e.message).slice(0, 120), lines: [] }); }
+    }));
+    return out;
+  }
   async function startModels() {
     const out = { starting: [], ready: [], skipped: [] };
     for (const d of devices.values()) {
@@ -253,7 +268,7 @@ function createHub(opts) {
   const stop = () => { if (timer) clearInterval(timer); timer = null; };
   const devicesRaw = () => [...devices.values()].map((d) => ({ ...d, alias: aliases()[d.id] || d.nodeAlias }));
 
-  return { start, stop, refresh, view, coordination, devices: devicesRaw, setAlias, setReserved, modelAction, restartAgents, startModels, submit, jobStatus, submitTo, jobOn, preRender, pickDevice,
+  return { start, stop, refresh, view, coordination, devices: devicesRaw, setAlias, setReserved, modelAction, restartAgents, startModels, agentLogs, submit, jobStatus, submitTo, jobOn, preRender, pickDevice,
     archiveDevice, archiveCall, renderBusyOf, reservedOf, aiCapable, aiReady, idleEnough, assignmentOf, load: byLoad, policy };
 }
 

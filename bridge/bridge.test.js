@@ -289,6 +289,49 @@ const gpu = (util) => async () => ({ name: 'Fake RTX 3060', utilPct: util, vramU
     assert.deepEqual([cF, cV], [['start'], []]);
     await F.stop(); await V.stop(); await U.stop(); await N.stop();
   });
+  console.log('the agent\'s own log (the G741 app\'s Logs tab)');
+  await test('an agent keeps its log: read only with a signature, from a line number on, and a job\'s lines never carry its prompt', async () => {
+    const G = mkR('PC-Log', { llamaUrl: 'http://127.0.0.1:' + slow.port, model: 'fake' }), b = 'http://127.0.0.1:' + await G.start();
+    assert.equal((await fetch(b + '/v1/log')).status, 401);
+    const first = (await signedFetch(b, KEY, 'GET', '/v1/log')).json;
+    assert.ok(first.ok && first.startedAt > 0 && first.lines.some((l) => /^started: "PC-Log" listening on :\d+ \(started by hand\)$/.test(l.text)), JSON.stringify(first.lines));
+    const secret = 'a prompt about the client Torre Polanco';
+    const j = await signedFetch(b, KEY, 'POST', '/v1/jobs', { type: 'llm.chat', area: 'sales', role: 'Nadia', messages: [{ role: 'user', content: secret }] });
+    await sleep(700);
+    const next = (await signedFetch(b, KEY, 'GET', '/v1/log?since=' + first.seq)).json;
+    assert.deepEqual(next.lines.map((l) => l.text.replace(/ in \d+\.\d s.*$/, ' in N s')), ['job ' + j.json.jobId + ' started: llm.chat (sales) for Nadia', 'job ' + j.json.jobId + ' done in N s']);
+    assert.ok(next.lines.every((l) => l.seq > first.seq && Number.isFinite(l.ts) && l.level === 'info'));
+    assert.ok(!JSON.stringify((await signedFetch(b, KEY, 'GET', '/v1/log')).json).includes('Torre Polanco'), 'the prompt is never in the log');
+    await G.stop();
+  });
+  await test('a failed job says why, unless it is confidential: then only that it failed; a refused request is a warning', async () => {
+    const N = mkR('PC-Down', { llamaUrl: 'http://127.0.0.1:1' }), b = 'http://127.0.0.1:' + await N.start();
+    const open = await signedFetch(b, KEY, 'POST', '/v1/jobs', { type: 'llm.chat', area: 'sales', messages: [{ role: 'user', content: 'x' }] });
+    const conf = await signedFetch(b, KEY, 'POST', '/v1/jobs', { type: 'llm.chat', area: 'legal', confidential: true, messages: [{ role: 'user', content: 'y' }] });
+    await signedFetch(b, OTHER, 'GET', '/v1/info');
+    await sleep(200);
+    const lines = (await signedFetch(b, KEY, 'GET', '/v1/log')).json.lines;
+    const failed = (id) => lines.find((l) => l.text.startsWith('job ' + id + ' failed'));
+    assert.match(failed(open.json.jobId).text, /failed after \d+\.\d s: llm_unavailable/); assert.equal(failed(open.json.jobId).level, 'warn');
+    assert.match(failed(conf.json.jobId).text, /^job \w+ failed after \d+\.\d s$/);
+    assert.ok(lines.some((l) => /^rejected request from .*: bad-signature$/.test(l.text) && l.level === 'warn'));
+    await N.stop();
+  });
+  await test('the hub reads each agent\'s log from where it left off, and starts again from the first line when the agent restarted', async () => {
+    const A1 = mkR('PC-One'), p1 = await A1.start();
+    const h = createHub({ dir: tmp(), key: KEY, targets: [{ host: '127.0.0.1', port: p1, source: 'local' }] });
+    await h.refresh();
+    const [r1] = await h.agentLogs({});
+    assert.equal(r1.alias, 'PC-One'); assert.equal(r1.pc, 1); assert.ok(r1.lines.length >= 1 && r1.seq >= r1.lines.length);
+    const cur = { [r1.id]: { seq: r1.seq, startedAt: r1.startedAt } };
+    const [r2] = await h.agentLogs(cur);
+    assert.equal(r2.lines.length, 0, 'nothing new since');
+    const [r3] = await h.agentLogs({ [r1.id]: { seq: r1.seq, startedAt: r1.startedAt - 1 } });
+    assert.deepEqual([r3.restarted, r3.seq, r3.lines.length], [true, 0, 0]);
+    const [r4] = await h.agentLogs({ [r1.id]: { seq: 0, startedAt: r3.startedAt } });
+    assert.equal(r4.lines.length, r1.seq, 'read from its first line again');
+    await A1.stop();
+  });
   await slow.close();
 
   console.log('discovery (real UDP broadcast, optional)');

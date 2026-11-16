@@ -134,6 +134,9 @@ P2 soon, P3 later), a due date, numbered steps with copyable commands, a "done w
   folders that config lists; see above). It never runs commands or takes code from the network, and reads files only in that one case. Its fixed processes are `nvidia-smi` and the **one** model command built from *this PC's own*
   `bridge-node.json`; the network can only say "start" or "stop" that model, and a stop only ever kills the process the
   agent started itself.
+* An agent keeps its own log (the last 1000 lines; `GET /v1/log`, signed like every request) for the G741 app's Logs tab: what it says about itself (started, model
+  loaded or unloaded, a job started, done or failed, a client taking the GPU, a refused request). Never a prompt or a result; a confidential job's line says only
+  that it failed; the Archivist's messages stay on that PC's console.
 * The key is created once, **never printed** (only a short fingerprint is) and **never committed**. Move it between PCs by
   hand (USB stick or a direct share). Never paste it in chat, e-mail or a repo.
 * The hub only follows **private LAN addresses**. Nothing here is exposed to the internet; the hub apps reach the data
@@ -225,7 +228,7 @@ It was scheduled with a self-deleting Task Scheduler entry (`G741-Nightly-Once-<
 ## Tests
 
 ```
-node bridge/bridge.test.js        # 34 checks: signing, replay, routing, two agents + hub, remote restart and start agents, Task-IO
+node bridge/bridge.test.js        # 37 checks: signing, replay, routing, two agents + hub, remote restart and start agents, the agent's log, Task-IO
 node bridge/coordinator.test.js   # 33 checks: render awareness, nightly model, dispatcher, routines, hostile input, installer
 node bridge/nightly.test.js       # 7 checks: the one-off cloud-lane nightly against a mock launcher
 node bridge/tickets.test.js       # 22 checks: the ticket model, fix notes, verdicts, the fix queue, what is private
@@ -236,7 +239,7 @@ node bridge/archivist.test.js     # 28 checks: the Archivist's engine (what it n
 node bridge/archive.test.js       # 17 checks: the launcher side (pinned to PC-1, allowed folders, render pause, continuation, routes)
 node bridge/ownertasks.test.js    # 20 checks: the owner task list (status, history, snooze, repeat, import of a list or a backup, hostile input, the routes and their key)
 node updater.test.js              # 21 checks: the admin panel's Update & restart, against real git (in the launcher folder, not bridge/)
-node bridge/bridge.mutation.js    # breaks 233 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive, GROUP=tickets, GROUP=owner or GROUP=remote one list)
+node bridge/bridge.mutation.js    # breaks 240 protections one at a time and requires the tests to notice (ONLY="text" runs a subset, GROUP=archive, GROUP=tickets, GROUP=owner, GROUP=remote or GROUP=agentlog one list)
 node bridge/demo-server.js        # two SIMULATED PCs + sample data on http://127.0.0.1:8791, to preview the pages
 ```
 
