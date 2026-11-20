@@ -6,6 +6,9 @@ devconsole.key
 devconsole-github.key
 get_cf_turn_creds.ps1
 turn_creds.env
+# Femto Group: the mailbox password for the confirmation emails, and the members' accounts, sessions, audio, transcripts and starting passwords
+femto-mail.key
+femto-data/
 
 # QA test case data - lives on the host, not in git (see qa/app.js)
 qa-data.json

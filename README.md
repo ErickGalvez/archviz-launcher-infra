@@ -205,6 +205,37 @@ Tests: `node logs.test.js` (22 checks) and `node logs.mutation.js`. The agent's 
 - a deleted case does not come back
 - an empty library is left for the QA console's own import
 
+## Femto Group: a separate island for the sales team
+
+Femto Group is three people (Hugo, Edgar, Erick), each with their own AI agent. They work on their own page, `https://g-741studio.com/femto/`, and nothing else: a Femto session opens `/api/femto/*` only, and no other key opens Femto data (the Dev Console key can only list who has finished signing up). Code: `femto.js` (accounts, sessions, notes, the queue), `femto-mail.js` (the confirmation emails), `femto-transcribe.py` (speech to text), `femto-admin.js` (accounts). Data: `femto-data/` (gitignored).
+
+**Accounts.** Only the people have accounts; the agents don't.
+1. `node femto-admin.js init` creates Hugo, Edgar and Erick and writes their starting passwords to `femto-data\starting-passwords.txt` (never printed). Hand each person theirs, then delete the file.
+2. On their first sign-in each person gives their email, opens the link that arrives from the studio's domain (24 hours, works once), then chooses their own password (10+ characters, not their name). Until then the session can do nothing else.
+3. `node femto-admin.js list` shows who is where. `node femto-admin.js reset <id>` gives a new starting password and signs that person out (their email stays). `node femto-admin.js agent <id> <name>` names a person's agent.
+
+Passwords are scrypt hashes; sessions (12 hours) and confirmation links are kept only as SHA-256 hashes. Five wrong passwords lock an account for 15 minutes; ten failures from one address stop that address for 15 minutes; at most three confirmation emails an hour per person.
+
+**Email.** Confirmation emails go through the domain's Hostinger mailbox. Create `no-reply@g-741studio.com` in Hostinger, then put this in `femto-mail.key` beside `launcher-server.js` (gitignored):
+```json
+{ "host": "smtp.hostinger.com", "port": 465, "user": "no-reply@g-741studio.com", "pass": "<the mailbox password>", "from": "G741 Studio <no-reply@g-741studio.com>" }
+```
+Until that file exists nothing is sent: each email is saved in `femto-data\outbox\` (an `.eml` file) and the page tells the person to ask Erick for the link.
+
+**Audio notes.** A person attaches a recording (up to 30 minutes, 150 MB; it travels in 4 MB pieces because Cloudflare refuses bodies over 100 MB) with a few words of context. It is transcribed on this PC by `femto-transcribe.py` (faster-whisper `small`, on the CPU, below normal priority, one at a time; set `G741_PYTHON` if `python` is not the one with faster-whisper). The person's agent then writes the action items with the local model through the bridge, in the `sales` area, which is confidential and never leaves the studio's PCs. If no PC has the model loaded, the note waits and tries again every 2 minutes. The transcript and the action items can be edited; "Make again" rewrites the items from the edited transcript. The whole group sees every note; only its author can delete it.
+
+| Route | Who | What |
+|---|---|---|
+| `POST /api/femto/login` `{user, password}` | anyone | A session (`x-femto-session` header) and the stage: `email`, `confirm`, `password` or `ready` |
+| `GET /api/femto/me`, `POST /api/femto/logout` | member | The person, the stage, the team |
+| `POST /api/femto/email` `{email}` / `POST /api/femto/confirm` `{token}` / `POST /api/femto/password` `{current, next}` | member / anyone with the link / member | The three set-up steps, in that order |
+| `POST /api/femto/uploads/start\|chunk\|finish` | ready member | A recording, piece by piece, then a note |
+| `GET /api/femto/notes`, `GET /api/femto/note?id=`, `GET /api/femto/note/audio?id=` | ready member | The notes, one note, its audio |
+| `POST /api/femto/note/transcript\|actions\|regenerate\|delete` | ready member | Edit, remake, delete (author only) |
+| `GET /api/femto/admin/members` | Dev Console key | Who has finished signing up (no hashes) |
+
+Tests: `node femto.test.js` (32 checks) and `node femto.mutation.js`.
+
 ## Stopping the stream
 
 - Close the UE5 window (or the command prompt titled "UE5 PixelStream")

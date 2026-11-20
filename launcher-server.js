@@ -1633,7 +1633,7 @@ function readJsonBody(req) {
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, x-qa-key, x-devconsole-key, x-g741-pass',
+  'Access-Control-Allow-Headers': 'Content-Type, x-qa-key, x-devconsole-key, x-g741-pass, x-femto-session',
 };
 
 // A request made on this PC itself, not one that came through the Cloudflare tunnel (whose connector is also local, but Cloudflare stamps cf-ray on
@@ -1676,6 +1676,22 @@ let remote = null;
 try { remote = require('./remote-restart.js').createRemote({ updater, hub: () => (bridgeRoutes ? bridgeRoutes.hub : null), busy: updateBusy, log: (m) => addLog('lobby', 'Dev Console: ' + m, 'info') }); }
 catch (e) { console.error('Remote restart not loaded: ' + e.message); }
 
+// ── FEMTO GROUP — a separate island for a three-person sales team, each with their own agent (femto.js) ──
+// Its members sign in with their own passwords, and their session opens /api/femto/* and nothing else. Audio notes are transcribed on this PC
+// (femto-transcribe.py) and turned into action items by the local model through the bridge. Data: femto-data/ (gitignored). Mail: femto-mail.key.
+let femto = null;
+try {
+  const { createMailer } = require('./femto-mail.js');
+  femto = require('./femto.js').createFemto({
+    dir: BAT_DIR,
+    cors: CORS_HEADERS,
+    isOwner: isDevConsoleAuthed,
+    log: (m, t) => addLog('lobby', m, t || 'info'),
+    mailer: createMailer({ configFile: path.join(BAT_DIR, 'femto-mail.key'), outboxDir: path.join(BAT_DIR, 'femto-data', 'outbox') }),
+    hub: () => (bridgeRoutes ? bridgeRoutes.hub : null),
+  });
+} catch (e) { console.error('Femto Group not loaded: ' + e.message); }
+
 const server = http.createServer((req, res) => {
   const url = req.url;
   const parsedUrl = new URL(req.url, 'http://localhost');
@@ -1686,6 +1702,9 @@ const server = http.createServer((req, res) => {
     res.end();
     return;
   }
+
+  // /api/femto/* (its own sessions; see femto.js). Returns true once it has answered.
+  if (femto && femto.handle(req, res, parsedUrl)) return;
 
   // /api/bridge/* and /api/taskio/* (Dev Console key). Returns true once it has answered.
   if (bridgeRoutes && bridgeRoutes.handle(req, res, parsedUrl)) return;
