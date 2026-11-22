@@ -127,7 +127,8 @@ const ROUTINES = [
 ];
 
 // idle() says whether a PC could take scheduled work right now outside the night window (the hub's idleEnough on any device).
-function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Date.now, kick = () => {}, log = () => {}, tz = -360, verifier = null, idle = () => false }) {
+// autopilotOn(persona) says whether that agent may start its routines by itself (bridge/agents.js); "Run now" ignores it, the schedule obeys it.
+function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Date.now, kick = () => {}, log = () => {}, tz = -360, verifier = null, idle = () => false, autopilotOn = () => true }) {
   const stateFile = path.join(dir, 'routines-state.json');
   const load = () => { try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch (e) { return {}; } };
   const save = (st) => { try { fs.writeFileSync(stateFile, JSON.stringify(st, null, 2)); } catch (e) { log('could not save routine state: ' + e.message); } };
@@ -137,7 +138,7 @@ function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Da
   function list() {
     const st = load();
     return ROUTINES.map((r) => ({ id: r.id, persona: r.persona, area: r.area, title: r.title, schedule: r.schedule, kind: r.kind, lane: laneOf(r), advisory: !!r.advisory, confidential: isConfidential(policy, r.area, false),
-      enabled: !(st[r.id] && st[r.id].enabled === false), lastRunAt: (st[r.id] || {}).lastRunAt || null, lastResult: (st[r.id] || {}).lastResult || null, lastTaskId: (st[r.id] || {}).lastTaskId || null }));
+      enabled: !(st[r.id] && st[r.id].enabled === false), autopilot: autopilotOn(r.persona), lastRunAt: (st[r.id] || {}).lastRunAt || null, lastResult: (st[r.id] || {}).lastResult || null, lastTaskId: (st[r.id] || {}).lastTaskId || null }));
   }
 
   // Runs one routine now (scheduled or by the owner). Returns { ok, taskId } or { ok:false, skipped | error }.
@@ -195,6 +196,8 @@ function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Da
     for (const r of ROUTINES) {
       const s = st[r.id] || {};
       if (s.enabled === false || s.lastNightKey === nightKey(t, window)) continue;
+      if (!autopilotOn(r.persona)) continue;                           // the agent's autopilot is off: it works only when asked
+
       if (r.schedule === 'weekly' && s.lastRunAt && t - s.lastRunAt < 6.5 * DAY) continue;
       const res = run(r.id);
       started.push({ id: r.id, ...res });
@@ -204,4 +207,4 @@ function createRoutines({ taskio, dir, policy, window = DEFAULT_WINDOW, now = Da
   return { list, run, tick, setEnabled, definitions: ROUTINES };
 }
 
-module.exports = { createRoutines, ROUTINES };
+module.exports = { createRoutines, ROUTINES, gather };     // gather: so Hex's prompt-injection check builds prompts exactly as the routines do

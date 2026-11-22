@@ -878,6 +878,7 @@ function logInquiry(message, ip, device) {
 // (it falls back to /api/inquiry), so the site can ship before the launcher is restarted.
 const QUOTES_LOG_FILE = path.join(BAT_DIR, 'quotes-log.jsonl');
 const QUOTE_MAX_BODY = 16 * 1024;
+const INQUIRY_MAX_BODY = 8 * 1024;          // the "Let's talk" bar keeps 500 characters; 8 KB is plenty and stops a huge body being read into memory
 const QUOTE_LIMIT_PER_HOUR = 6;        // recorded quotes per visitor per hour
 const QUOTE_LIMIT_ALL_PER_HOUR = 120;  // and in total, so a flood cannot fill the CRM
 const QUOTE_ENUMS = {
@@ -2493,9 +2494,20 @@ const server = http.createServer((req, res) => {
   }
 
   if (url === '/api/inquiry' && req.method === 'POST') {
-    let body = '';
-    req.on('data', d => body += d);
+    // Capped like the quote form (found by Hex on the range: this public route used to read a body of any size into memory).
+    let body = '', big = false;
+    req.setEncoding('utf8');
+    req.on('data', (d) => {
+      if (big) return;
+      body += d;
+      if (body.length > INQUIRY_MAX_BODY) {
+        big = true; body = '';
+        res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Too large' }), () => req.destroy());
+      }
+    });
     req.on('end', () => {
+      if (big) return;
       let data = {};
       try { data = JSON.parse(body || '{}'); } catch (e) {}
       const ip = req.socket.remoteAddress || 'unknown';
@@ -2882,8 +2894,12 @@ const server = http.createServer((req, res) => {
   // header — a direct local request never has one — so that's used here to
   // block the admin page specifically from the public path while leaving
   // local access (how you actually use this panel) completely unaffected.
+  //
+  // 2026-11-21, found by Hex on the range: the server listens on every network interface, so a phone or laptop on the same Wi-Fi reached this page
+  // too (no cf-ray, not loopback) and got the admin key. Now the page is served only to a request made on this PC itself (isLocalDirect: loopback
+  // and no Cloudflare headers). Open the panel on PC-1 (http://localhost:3000/); from anywhere else use the G741 app or the Dev Console.
   if (url === '/' || url === '/index.html') {
-    if (req.headers['cf-ray']) {
+    if (!isLocalDirect(req)) {
       res.writeHead(404);
       res.end('Not found');
       return;

@@ -18,6 +18,9 @@ const { createRoutines } = require('./routines');
 const { createVerifier } = require('./verifier');
 const { createArchive } = require('./archive.js');
 const { createOwnerTasks } = require('./ownertasks.js');
+const { createAgents } = require('./agents.js');
+const { createRedteamStore } = require('../redteam/store.js');
+const { createMesh } = require('./mesh.js');
 const { DEFAULT_WINDOW } = require('./schedule');
 const defaultPolicy = require('./policy');
 
@@ -35,6 +38,9 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
   const keyFile = process.env.G741_BRIDGE_KEY_FILE || path.join(dir, 'bridge', 'bridge.key');
   let hub = null, hubError = null, dispatcher = null, routines = null, routineTimer = null, archive = null;
   const ownerTasks = createOwnerTasks({ dir, log });       // the owner's own to-do list (owner-tasks.json); no hub needed
+  const agents = createAgents({ dir, log });               // autopilot per agent (agents-state.json); no hub needed
+  const redteam = createRedteamStore({ dir });             // Hex: range runs + the course (redteam-data/, classified); read only here, written by redteam/range.js
+  const mesh = createMesh({ dir, log, rootFrom: () => (readJson(path.join(dir, 'bridge.json'), {}).mesh || {}).root });   // Zed: image in, 3D model out (a worker on PC-1 does the GPU part)
   // Vera, the verifier: reads the repo checkouts named in bridge.json (verify.roots; the launcher's own folder by default) and writes verdicts onto tickets.
   const rootsOf = () => {
     const cfg = (readJson(path.join(dir, 'bridge.json'), {}).verify || {}).roots || {};
@@ -46,7 +52,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     hub = createHub({ dir, key: P.loadKey(keyFile), log, getRenderState, idleCfg, ...hubOptions });
     dispatcher = createDispatcher({ hub, taskio, log, pollMs: hubOptions.dispatchMs || 3000, onDone: (t) => { verifier.handleDone(t); if (archive) archive.handleDone(t); } });
     archive = createArchive({ taskio, hub, log });
-    routines = createRoutines({ taskio, dir, policy: hub.policy, window: windowCfg(), kick: () => dispatcher.kick(), log, verifier, idle: () => hub.devices().some(hub.idleEnough) });
+    routines = createRoutines({ taskio, dir, policy: hub.policy, window: windowCfg(), kick: () => dispatcher.kick(), log, verifier, idle: () => hub.devices().some(hub.idleEnough), autopilotOn: agents.autopilotOn });
     if (autoStart && !process.env.G741_BRIDGE_DISABLED) {
       hub.start(); dispatcher.start();
       routineTimer = setInterval(() => { try { routines.tick(); } catch (e) { log('routines: ' + e.message); } }, 60000);
@@ -76,7 +82,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
 
   function handle(req, res, u) {
     const p = u.pathname;
-    if (!p.startsWith('/api/bridge/') && !p.startsWith('/api/taskio/') && !p.startsWith('/api/archive/') && !p.startsWith('/api/owner/')) return false;
+    if (!['/api/bridge/', '/api/taskio/', '/api/archive/', '/api/owner/', '/api/agents/', '/api/redteam/', '/api/mesh/'].some((x) => p.startsWith(x))) return false;
     if (!isAuthed(req)) { json(res, 401, { ok: false, error: 'Unauthorized' }); return true; }
     const post = (fn) => { readBody(req, res, (b) => (b ? fn(b) : json(res, 400, { ok: false, error: 'Invalid body' }))); return true; };
     const needHub = () => { if (!hub) { json(res, 503, { ok: false, error: hubError }); return false; } return true; };
@@ -108,6 +114,28 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
       if (req.method === 'POST' && p === '/api/owner/tasks/import') return post((b) => run(() => ownerTasks.importTasks(b.tasks)));
       json(res, 404, { ok: false, error: 'Not found' }); return true;
     }
+
+    // ── Autopilot, one switch per agent (bridge/agents.js). ──
+    if (p === '/api/agents/state' && req.method === 'GET') { json(res, 200, agents.state()); return true; }
+    if (p === '/api/agents/autopilot' && req.method === 'POST') return post((b) => { const r = agents.setAutopilot(b.name, b.on); json(res, r.ok ? 200 : 400, r); });
+    if (p.startsWith('/api/agents/')) { json(res, 404, { ok: false, error: 'Not found' }); return true; }
+
+    // ── Hex, the red team: range runs and the course. CLASSIFIED: Dev Console key (checked above), never cached, never forwarded anywhere. ──
+    if (p.startsWith('/api/redteam/')) {
+      const secret = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...cors }); res.end(JSON.stringify(obj)); };
+      try {
+        if (req.method === 'GET' && p === '/api/redteam/status') { secret(200, redteam.status()); return true; }
+        if (req.method === 'GET' && p === '/api/redteam/runs') { secret(200, { ok: true, runs: redteam.listRuns(u.searchParams.get('limit')) }); return true; }
+        if (req.method === 'GET' && p === '/api/redteam/run') { const r = redteam.getRun(u.searchParams.get('id') || ''); secret(r ? 200 : 404, r ? { ok: true, run: r } : { ok: false, error: 'no such run' }); return true; }
+        if (req.method === 'GET' && p === '/api/redteam/lessons') { secret(200, redteam.lessonsView()); return true; }
+        if (req.method === 'GET' && p === '/api/redteam/lesson') { const r = redteam.getLesson(u.searchParams.get('n')); secret(r.ok ? 200 : r.locked ? 403 : 404, r); return true; }
+        if (req.method === 'POST' && p === '/api/redteam/lesson/read') return post((b) => { const r = redteam.markRead(b.n, b.answer); secret(r.ok ? 200 : 400, r); });
+      } catch (e) { log('redteam: ' + e.message); secret(500, { ok: false, error: 'The range records could not be read.' }); return true; }
+      secret(404, { ok: false, error: 'Not found' }); return true;
+    }
+
+    // ── Zed's 3D models: an image in, a mesh out (bridge/mesh.js). The launcher only stores and serves files; the worker on PC-1 does the GPU work. ──
+    if (p.startsWith('/api/mesh/')) return mesh.handle(req, res, u, { json: (code, obj) => json(res, code, obj), cors });
 
     // ── the Archivist (secret department): scans of a folder on PC-1, read-only catalogs. All of it needs the Dev Console key (checked above). ──
     if (p.startsWith('/api/archive/')) {
@@ -177,7 +205,7 @@ function init({ dir, isAuthed, cors, log = () => {}, getProspects, getBugs, getR
     json(res, 404, { ok: false, error: 'Not found' });
     return true;
   }
-  return { handle, beforeRender, taskio, hub, dispatcher, routines, verifier, archive, stop: () => { if (hub) hub.stop(); if (dispatcher) dispatcher.stop(); if (routineTimer) clearInterval(routineTimer); } };
+  return { handle, beforeRender, taskio, hub, dispatcher, routines, agents, redteam, mesh, verifier, archive, stop: () => { if (hub) hub.stop(); if (dispatcher) dispatcher.stop(); if (routineTimer) clearInterval(routineTimer); } };
 }
 
 module.exports = { init };

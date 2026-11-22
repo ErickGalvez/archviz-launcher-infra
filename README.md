@@ -205,6 +205,29 @@ Tests: `node logs.test.js` (22 checks) and `node logs.mutation.js`. The agent's 
 - a deleted case does not come back
 - an empty library is left for the QA console's own import
 
+## The agents: autopilot, Hex (red team) and Zed's 3D models
+
+Every route here needs the Dev Console key (`x-devconsole-key`). Each agent in the Virtual Team page opens a pop-up with Ask, Work, Processes
+and an autopilot switch; these are the routes behind it.
+
+| Route | |
+|---|---|
+| `GET /api/agents/state` · `POST /api/agents/autopilot {name, on}` | Autopilot per agent (`agents-state.json`, gitignored). On (the default): the agent's routines start by themselves in the night window or when a PC is idle. Off: only when you ask or press Run now. It never widens what an agent may do. |
+| `GET /api/redteam/status` · `runs` · `run?id=` · `lessons` · `lesson?n=` · `POST /api/redteam/lesson/read` | **Hex**, the pen tester: one contained attack a day against a throwaway copy of the launcher, and one security lesson a day. Results are classified: `redteam-data/` (gitignored), `Cache-Control: no-store`. See [redteam/README.md](redteam/README.md). |
+| `POST /api/mesh/upload?ext=&name=&faces=` (image bytes, 10 MB) · `GET /api/mesh/jobs` · `GET /api/mesh/file?id=&kind=image\|glb` · `POST /api/mesh/delete {id}` | **Zed**'s 3D models: the launcher stores the picture in `mesh/` (gitignored; or `bridge.json` `mesh.root`) and serves the model. The GPU work is done by the mesh worker on PC-1 (`mcp/mesh-maker` in the website repo); the launcher starts no process. |
+
+Hex's daily run is a Windows scheduled task (once, on PC-1):
+
+```
+schtasks /Create /TN "G741-RedTeam-Range" /SC DAILY /ST 04:30 /TR "\"C:\Program Files\nodejs\node.exe\" \"Y:\ArchVizChallenge\UE5ProjectV2\ProjectFiles\redteam\range.js\"" /F
+```
+
+Tests: `node redteam/redteam.test.js` (53 checks) and `node redteam/redteam.mutation.js` (18 protections broken on purpose, each must be caught).
+
+**Found by Hex on his first run (fixed here):** the admin panel at `/` handed the admin key to any device on the same network (the server
+listens on every interface; the only gate was Cloudflare's header). It is now served only to a request made on PC-1 itself. And the public
+`/api/inquiry` read a body of any size into memory; it is now capped at 8 KB.
+
 ## Stopping the stream
 
 - Close the UE5 window (or the command prompt titled "UE5 PixelStream")

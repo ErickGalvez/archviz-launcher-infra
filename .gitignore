@@ -69,3 +69,10 @@ nightly-*.state.json
 # The owner's own to-do list (private; the page reads it through the launcher with the Dev Console key)
 owner-tasks.json
 owner-tasks.json.tmp
+
+# Hex (red team): range results and the course progress are CLASSIFIED and stay on this PC; the repo is public
+redteam-data/
+# per-agent autopilot switches
+agents-state.json
+# Zed's 3D jobs (images in, meshes out)
+mesh/
