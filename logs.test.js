@@ -105,9 +105,11 @@ const WILBUR = [
   await test('like tail -f: the next read gets only the new lines, and a half-written line waits for its end', async () => {
     const c0 = logs.cursor;
     fs.appendFileSync(wfile, WILBUR.slice(9, 13).join('\n') + '\n' + WILBUR[13].slice(0, 20));
+    fs.utimesSync(wfile, at(15, 18, 22) / 1000, at(15, 18, 22) / 1000);           // the lines are dated by the file: pin it to the fixture's day, not today
     let r = (await logs.query({ session: 'all', type: 'everything', since: c0, sources: 'wilbur' })).body;
     assert.deepEqual(r.lines.map((l) => l.type), ['keepalive', 'keepalive', 'keepalive', 'keepalive']);
     fs.appendFileSync(wfile, WILBUR[13].slice(20) + '\n' + WILBUR[14] + '\n');
+    fs.utimesSync(wfile, at(15, 20, 31) / 1000, at(15, 20, 31) / 1000);
     r = (await logs.query({ session: 'all', type: 'everything', since: r.cursor, sources: 'wilbur' })).body;
     assert.deepEqual(r.lines.map((l) => [l.level, l.type]), [['warn', 'players'], ['error', 'streamer']]);
     assert.ok(!r.lines[0].text.includes('\u001b'), 'colour codes are gone');
