@@ -151,8 +151,20 @@ The button then reads **Update & restart (N)**, **Update (N, no restart needed)*
 - A running stream, a turn, a queue or someone in the room blocks it; the app (and the panel) asks before cutting that off.
 - It exits the process, and the watchdog starts it again about 5 seconds later. On PC-1 the watchdog is the G741 app; after a rollback (above) it is `listener_service.bat`. Neither the app's window nor the panel reloads itself afterwards (loading the old panel starts a stream). They wait until `/api/status` answers again.
 - `sync_repo.ps1` (the **ArchViz-Sync** task) stops `launcher-server.js` after a pull the same way and relies on the same watchdog to bring it back.
-- Needs the admin key (`/api/update/status`, `/api/update/apply`). Tests: `node updater.test.js` (real git, 21 checks), `node updater.mutation.js`.
+- Needs the admin key (`/api/update/status`, `/api/update/apply`). Tests: `node updater.test.js` (real git, 24 checks), `node updater.mutation.js`.
 - A restart keeps every page signed in: the passes' hashes are in `passes.json`.
+
+### The G741 app's About section and its Install updates
+
+- **`/api/update/status`** also carries `about`, what the running launcher is:
+  - `build`: the number of commits up to it
+  - `commit` and `date`
+  - `pr`: the pull request it was merged from
+  - `change`: the last change, a merge's own title skipped
+  - `changes`: the five before it
+
+  It is read when the process starts, and again after an update that needs no restart.
+- **`GET /api/update/app`** (admin key) answers the newest G741 app installer in `G741Launcher\dist`: its `version`, `size` and `builtAt`, for the app to compare with its own version. It never hands out the file: that is only done after the owner's Google sign-in (`/api/app/download-ticket`), the same way Cortex downloads it.
 
 ### From the Dev Console (Launchers card)
 

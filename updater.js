@@ -50,12 +50,36 @@ function createUpdater({ run, dir, node = process.execPath, now = Date.now, busy
 
   // Call once at startup: remembers which commit THIS process was started from.
   function start() {
-    ready = git(['rev-parse', 'HEAD'], { timeout: 8000 }).then((r) => { state.running = r.code === 0 && /^[0-9a-f]{40}$/.test(r.stdout.trim()) ? r.stdout.trim() : null; }).catch(() => { state.running = null; });
+    ready = git(['rev-parse', 'HEAD'], { timeout: 8000 }).then(async (r) => {
+      state.running = r.code === 0 && /^[0-9a-f]{40}$/.test(r.stdout.trim()) ? r.stdout.trim() : null;
+      if (state.running) await readAbout(state.running);
+    }).catch(() => { state.running = null; });
     return ready;
   }
 
+  // What the running launcher is, for the G741 app's About section: its build number (the commits up to it), its commit and date, the pull request it
+  // came from, and its last changes. Merges are skipped as "changes" (their title is only "Merge pull request #n"); their number is kept as `pr`.
+  // Read when the process starts (and after an update that needs no restart), since the running code does not change in between.
+  const about = { build: null, commit: null, date: null, pr: null, change: null, changes: [] };
+  async function readAbout(sha) {
+    try {
+      const [n, top, lg] = await Promise.all([git(['rev-list', '--count', sha], { timeout: 8000 }), git(['log', '-1', '--format=%cI%x09%s', sha], { timeout: 8000 }),
+        git(['log', '--no-merges', '--date-order', '--max-count=5', '--format=%h%x09%cI%x09%s', sha], { timeout: 8000 })]);   // never a commit before its children
+      const [date, ...subj] = top.code === 0 ? top.stdout.trim().split('\t') : [];
+      about.build = n.code === 0 ? parseInt(n.stdout, 10) || null : null;
+      about.commit = short(sha);
+      about.date = date ? clip(date, 40) : null;
+      const pr = /^Merge pull request #(\d+)/.exec(subj.join(' '));
+      about.pr = pr ? Number(pr[1]) : null;
+      about.changes = lg.code === 0 ? lines(lg.stdout).map((l) => { const [s, at, ...rest] = l.split('\t'); return { sha: short(s), date: clip(at, 40), subject: clip(rest.join(' '), 140) }; }) : [];
+      about.change = about.changes[0] || null;
+    } catch (e) { /* the About section says what it could not read */ }
+  }
+  const aboutView = () => ({ ...about, changes: about.changes.slice() });
+
   async function compute() {
     const info = { ok: false, at: now(), running: short(state.running) };
+    info.about = aboutView();
     if (!state.running) { info.error = 'Git is not available on this host, or this folder is not a git checkout.'; return info; }
     const f = await git(['fetch', '--quiet', 'origin'], { timeout: 30000 });
     if (f.code !== 0) info.fetchError = clip(redact(f.stderr || f.stdout), 160) || 'fetch failed';
@@ -142,12 +166,12 @@ function createUpdater({ run, dir, node = process.execPath, now = Date.now, busy
       cache = null;
       const exits = wantRestart || info.needsRestart, was = state.running;
       if (exits) { willExit = true; log('update: ' + short(before) + ' -> ' + short(after) + ', ' + (info.ahead || 0) + ' change(s); restarting'); setTimeout(restart, restartDelayMs); }
-      else { state.running = after; log('update: ' + short(before) + ' -> ' + short(after) + ', no restart needed'); }
+      else { state.running = after; await readAbout(after); log('update: ' + short(before) + ' -> ' + short(after) + ', no restart needed'); }
       return { ok: true, from: short(was), to: short(after), pulled, changes: info.ahead || 0, restarting: exits, needsRestart: !!info.needsRestart };
     } finally { if (!willExit) applying = false; }
   }
 
-  return { start, check, apply, describe, state };
+  return { start, check, apply, describe, state, about: async () => { await ready; return aboutView(); } };
 }
 
 module.exports = { createUpdater, describe, RESTART_FILES };

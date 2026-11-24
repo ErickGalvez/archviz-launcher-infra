@@ -1588,6 +1588,40 @@
           "response": []
         },
         {
+          "name": "Admin: the app installer version, no key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('says Unauthorized', () => pm.expect(pm.response.json()).to.include({ ok: false, error: 'Unauthorized' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/update/app",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "update",
+                "app"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
           "name": "G741 app passes: issue, no key",
           "event": [
             {
@@ -1779,7 +1813,8 @@
                   "if (pm.response.code === 200 && j.ok) pm.test('says what is running and what is upstream', () => {",
                   "    pm.expect(j.running).to.be.a('string').and.not.empty;",
                   "    pm.expect(j.legend).to.have.property('headline');",
-                  "});"
+                  "});",
+                  "pm.test('it says what the running launcher is (the app\\'s About section)', () => { const a = pm.response.json().about; pm.expect(a).to.be.an('object'); ['build', 'commit', 'date', 'pr', 'change'].forEach((k) => pm.expect(a).to.have.property(k)); pm.expect(a.changes).to.be.an('array'); });"
                 ]
               }
             }
@@ -1879,6 +1914,38 @@
                   "key": "type",
                   "value": "nonsense"
                 }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "The newest app installer (version only, never the file)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200, or 404 when there is no installer on this host', () => pm.expect(pm.response.code).to.be.oneOf([200, 404]));",
+                  "const j = pm.response.json();",
+                  "pm.test('a version, a size and a build time, and nothing that leads to the file', () => { if (pm.response.code === 404) return pm.expect(j.code).to.eql('no_installer'); pm.expect(j.version).to.match(/^\\d+\\.\\d+\\.\\d+$/); pm.expect(j.size).to.be.above(0); pm.expect(Date.parse(j.builtAt)).to.be.above(0); ['url', 'file', 'name', 'full', 'path'].forEach((k) => pm.expect(j).to.not.have.property(k)); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/update/app",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "update",
+                "app"
               ]
             }
           },
